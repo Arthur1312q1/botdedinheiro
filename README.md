@@ -67,20 +67,31 @@ Configure as seguintes variáveis de ambiente no Render.com:
 - **CAPITAL**: Só invista o que pode perder
 - **MONITORAMENTO**: Monitore o bot regularmente
 
-## 🌐 Monitoramento Web
+## 🌐 Interface Web de Controle
 
-O bot inclui um servidor web para monitoramento via Render.com:
+O bot agora possui uma interface web completa para controle e monitoramento:
 
-- **URL Principal**: `https://seu-app.onrender.com/` - Status geral do bot
-- **Status Detalhado**: `https://seu-app.onrender.com/status` - Informações completas
-- **Health Check**: `https://seu-app.onrender.com/health` - Verificação de saúde
+### 🎮 **Funcionalidades da Interface:**
+- **▶️ Botão INICIAR BOT**: Liga o bot de trading
+- **⏹️ Botão PARAR BOT**: Para o bot com segurança  
+- **🔄 Botão ATUALIZAR**: Atualiza dados em tempo real
+- **📊 Dashboard Visual**: Gráficos e cards informativos
+- **📱 Responsivo**: Funciona em desktop e mobile
 
-### Informações Disponíveis:
-- Status do bot (rodando/parado)
-- Preço atual do ETH/USDT  
-- Posição atual (long/short)
+### 📊 **Informações Exibidas:**
+- Status do bot (Rodando/Parado)
+- Preço atual do ETH/USDT
+- Posição atual (Long/Short/Nenhuma)
 - Última atualização
 - Contador de erros
+- Dados detalhados em JSON
+
+### 🔗 **URLs Disponíveis:**
+- **Interface Principal**: `https://seu-app.onrender.com/`
+- **API Status**: `https://seu-app.onrender.com/status`
+- **Health Check**: `https://seu-app.onrender.com/health`
+- **Iniciar Bot**: `POST https://seu-app.onrender.com/start`
+- **Parar Bot**: `POST https://seu-app.onrender.com/stop`
 
 1. Bot analisa os dados de velas a cada 5 minutos
 2. Calcula Supertrend e EMA 50
