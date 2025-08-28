@@ -10,6 +10,7 @@ Bot automatizado de trading para futuros de ETH/USDT na Bitget usando estratégi
 - **Alavancagem**: 10x
 - **Stop Loss**: 1%
 - **Capital**: Usa 100% do saldo USDT disponível
+- **Monitoramento Web**: Interface HTTP para acompanhar status do bot
 
 ## 📋 Requisitos
 
@@ -66,7 +67,20 @@ Configure as seguintes variáveis de ambiente no Render.com:
 - **CAPITAL**: Só invista o que pode perder
 - **MONITORAMENTO**: Monitore o bot regularmente
 
-## 📈 Como Funciona
+## 🌐 Monitoramento Web
+
+O bot inclui um servidor web para monitoramento via Render.com:
+
+- **URL Principal**: `https://seu-app.onrender.com/` - Status geral do bot
+- **Status Detalhado**: `https://seu-app.onrender.com/status` - Informações completas
+- **Health Check**: `https://seu-app.onrender.com/health` - Verificação de saúde
+
+### Informações Disponíveis:
+- Status do bot (rodando/parado)
+- Preço atual do ETH/USDT  
+- Posição atual (long/short)
+- Última atualização
+- Contador de erros
 
 1. Bot analisa os dados de velas a cada 5 minutos
 2. Calcula Supertrend e EMA 50
@@ -75,7 +89,7 @@ Configure as seguintes variáveis de ambiente no Render.com:
 5. Executa ordens de mercado para garantir preenchimento
 6. Mantém sempre uma posição ativa (long ou short)
 
-## 🔍 Logs
+## 📈 Como Funciona
 
 O bot gera logs detalhados mostrando:
 - Preços atuais e indicadores
