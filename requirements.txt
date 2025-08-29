@@ -1,5 +1,5 @@
 ccxt==4.1.64
-pandas>=2.2.0
-pandas-ta>=0.3.14b0
-numpy>=1.26.0
-flask>=3.0.0
+pandas==2.1.4
+numpy==1.24.3
+pandas-ta==0.3.14b0
+flask==3.0.0
