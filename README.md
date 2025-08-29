@@ -4,7 +4,7 @@ Bot automatizado de trading para futuros de ETH/USDT na Bitget usando estratégi
 
 ## 🚀 Características
 
-- **Estratégia**: Supertrend + EMA 50 com inversão automática de posições
+- **Estratégia**: Supertrend + EMA 10 com inversão automática de posições
 - **Par**: ETH/USDT:USDT (Futuros)
 - **Timeframe**: 15 minutos
 - **Alavancagem**: 10x
@@ -50,11 +50,12 @@ Configure as seguintes variáveis de ambiente no Render.com:
 
 ### Indicadores Utilizados:
 - **Supertrend**: ATR período 10, multiplicador 3.0
-- **EMA**: Média móvel exponencial de 50 períodos
+- **EMA**: Média móvel exponencial de 10 períodos (principal)
+- **EMAs Auxiliares**: 5, 8, 13, 20, 21, 34, 50, 100, 200
 
 ### Regras de Entrada:
-- **LONG**: Supertrend muda para alta + preço acima da EMA 50
-- **SHORT**: Supertrend muda para baixa + preço abaixo da EMA 50
+- **LONG**: Supertrend muda para alta + preço acima da EMA 10
+- **SHORT**: Supertrend muda para baixa + preço abaixo da EMA 10
 
 ### Regras de Saída:
 - **Stop Loss**: 1% contra a posição
@@ -111,14 +112,38 @@ O bot gera logs detalhados mostrando:
 
 ## 🛠️ Modificações Possíveis
 
-Para alterar parâmetros, edite as variáveis na classe `BitgetTradingBot`:
+## 🔧 Principais Mudanças Implementadas:
+
+### ✅ **EMA de 10 Períodos (Principal Mudança):**
+- **Filtro mais rápido**: EMA 10 ao invés de EMA 50
+- **Sinais mais frequentes**: Reage mais rápido às mudanças de preço
+- **Maior sensibilidade**: Mais trades em mercados voláteis
+
+### ✅ **Sistema de Sinais Otimizado:**
+- **COMPRA**: Supertrend vira alta + preço > EMA 10
+- **VENDA**: Supertrend vira baixa + preço < EMA 10
+- **Filtros auxiliares**: Confirmação com EMA 5 vs EMA 20
+- **Logs detalhados**: Mostra exatamente porque aceita/rejeita sinais
+
+### ✅ **Múltiplas EMAs para Confirmação:**
+- **10 EMAs diferentes**: 5, 8, 10, 13, 20, 21, 34, 50, 100, 200
+- **Análise robusta**: Filtros cruzados para maior precisão
+- **Menos falsos sinais**: Confirmação com diferentes períodos
+
+### ✅ **Melhor Detecção de Problemas:**
+- **Logs extremamente detalhados**: Cada passo é logado
+- **Verificação de saldo**: Logs de todos os cálculos
+- **Status de mercado**: Preço, EMAs, trend, tudo visível
+- **Debug de ordens**: Motivo de falhas nas execuções
+
+### 🔧 **Parâmetros Configuráveis:**
 
 ```python
 self.leverage = 10           # Alavancagem
 self.stop_loss_pct = 0.01   # Stop loss (1%)
 self.atr_period = 10        # Período ATR
 self.atr_multiplier = 3.0   # Multiplicador ATR
-self.ema_period = 50        # Período EMA
+self.ema_period = 10        # Período EMA principal (mudança aqui!)
 ```
 
 ## 📞 Suporte
