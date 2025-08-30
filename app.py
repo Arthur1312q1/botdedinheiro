@@ -20,11 +20,15 @@ bot_status = {
     'current_price': None,
     'signal_strength': 0,
     'position_duration': 0,
-    'trades_today': 0
+    'trades_today': 0,
+    'total_trades': 0,
+    'successful_trades': 0,
+    'win_rate': 0.0,
+    'last_trade_result': None
 }
 
 def run_bot():
-    """Executa o bot em uma thread separada"""
+    """Executa o bot em uma thread separada com melhor controle de erros"""
     global trading_bot, bot_status
     
     try:
@@ -39,7 +43,15 @@ def run_bot():
                 bot_status['last_update'] = time.strftime('%Y-%m-%d %H:%M:%S')
                 bot_status['current_position'] = trading_bot.current_position
                 bot_status['entry_price'] = trading_bot.entry_price
+                bot_status['total_trades'] = trading_bot.total_trades
+                bot_status['successful_trades'] = trading_bot.successful_trades
                 bot_status['error'] = None
+                
+                # Calcular win rate
+                if trading_bot.total_trades > 0:
+                    bot_status['win_rate'] = (trading_bot.successful_trades / trading_bot.total_trades) * 100
+                else:
+                    bot_status['win_rate'] = 0.0
                 
                 # Obter preço atual sempre
                 try:
@@ -98,7 +110,7 @@ HTML_TEMPLATE = '''
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Trading Bot - Modo Agressivo</title>
+    <title>Trading Bot - Ultra Agressivo</title>
     <style>
         * {
             margin: 0;
@@ -318,24 +330,26 @@ HTML_TEMPLATE = '''
             white-space: pre-wrap;
         }
         
-        .signal-strength {
-            display: flex;
-            align-items: center;
-            gap: 8px;
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+            gap: 10px;
+            margin-top: 15px;
         }
         
-        .strength-bar {
-            flex: 1;
-            height: 6px;
-            background: rgba(255,255,255,0.1);
-            border-radius: 3px;
-            overflow: hidden;
+        .stat-item {
+            text-align: center;
+            padding: 10px;
+            background: rgba(255,255,255,0.05);
+            border-radius: 6px;
         }
         
-        .strength-fill {
-            height: 100%;
-            background: linear-gradient(90deg, #ef4444, #f59e0b, #10b981);
-            transition: width 0.3s ease;
+        .win-rate-positive {
+            color: #10b981;
+        }
+        
+        .win-rate-negative {
+            color: #ef4444;
         }
         
         @media (max-width: 768px) {
@@ -362,8 +376,8 @@ HTML_TEMPLATE = '''
 <body>
     <div class="container">
         <div class="header">
-            <h1>Trading Bot - Modo Agressivo</h1>
-            <p>ETH/USDT Perpetual • Bitget • Timeframe 3m</p>
+            <h1>Trading Bot - Multi-Indicador Preciso</h1>
+            <p>ETH/USDT Perpetual • Bitget • Supertrend + AlgoAlpha + ATR + MFI • Trades Precisos</p>
         </div>
         
         <div class="control-buttons">
@@ -419,20 +433,27 @@ HTML_TEMPLATE = '''
             </div>
             
             <div class="card">
-                <h3>Sinais de Mercado</h3>
-                <div class="signal-strength">
-                    <span>Força:</span>
-                    <div class="strength-bar">
-                        <div class="strength-fill" id="signal-strength-bar" style="width: 0%"></div>
+                <h3>Estatísticas de Trading</h3>
+                <div class="stats-grid">
+                    <div class="stat-item">
+                        <div class="info-label">Total Trades</div>
+                        <div class="info-value" id="total-trades">0</div>
                     </div>
-                    <span id="signal-strength-text">0</span>
+                    <div class="stat-item">
+                        <div class="info-label">Sucessos</div>
+                        <div class="info-value" id="successful-trades">0</div>
+                    </div>
+                    <div class="stat-item">
+                        <div class="info-label">Win Rate</div>
+                        <div class="info-value" id="win-rate">0%</div>
+                    </div>
                 </div>
             </div>
         </div>
         
         <div class="card">
             <h3>Logs do Sistema</h3>
-            <div class="logs" id="system-logs">Sistema iniciado. Bot otimizado para scalping...</div>
+            <div class="logs" id="system-logs">Sistema iniciado. Bot ultra agressivo pronto para trading...</div>
         </div>
         
         <div id="error-container"></div>
@@ -453,7 +474,7 @@ HTML_TEMPLATE = '''
         
         async function startBot() {
             try {
-                addLog('🚀 Iniciando bot de trading...');
+                addLog('🚀 Iniciando bot de trading ultra agressivo...');
                 const response = await fetch('/start');
                 const data = await response.json();
                 addLog(`✅ ${data.message}`);
@@ -507,7 +528,7 @@ HTML_TEMPLATE = '''
                 
                 if (status.running) {
                     indicator.className = 'status-indicator status-running';
-                    statusText.textContent = 'Bot Rodando - Modo Agressivo';
+                    statusText.textContent = 'Bot Ativo - Multi-Indicador Preciso';
                 } else {
                     indicator.className = 'status-indicator status-stopped';
                     statusText.textContent = 'Bot Parado';
@@ -515,8 +536,8 @@ HTML_TEMPLATE = '''
                 
                 // Atualizar informações básicas
                 document.getElementById('last-update').textContent = status.last_update || '-';
-                document.getElementById('entry-price').textContent = status.entry_price ? `$${parseFloat(status.entry_price).toFixed(4)}` : '-';
-                document.getElementById('current-price').textContent = status.current_price ? `$${parseFloat(status.current_price).toFixed(4)}` : '-';
+                document.getElementById('entry-price').textContent = status.entry_price ? `${parseFloat(status.entry_price).toFixed(4)}` : '-';
+                document.getElementById('current-price').textContent = status.current_price ? `${parseFloat(status.current_price).toFixed(4)}` : '-';
                 
                 // Atualizar posição
                 const positionElement = document.getElementById('current-position');
@@ -547,14 +568,14 @@ HTML_TEMPLATE = '''
                     pnlElement.className = 'info-value';
                 }
                 
-                // Atualizar força do sinal
-                const signalStrength = status.signal_strength || 0;
-                const strengthBar = document.getElementById('signal-strength-bar');
-                const strengthText = document.getElementById('signal-strength-text');
+                // Atualizar estatísticas
+                document.getElementById('total-trades').textContent = status.total_trades || 0;
+                document.getElementById('successful-trades').textContent = status.successful_trades || 0;
                 
-                const strengthPercent = Math.min((signalStrength / 10) * 100, 100);
-                strengthBar.style.width = `${strengthPercent}%`;
-                strengthText.textContent = signalStrength;
+                const winRateElement = document.getElementById('win-rate');
+                const winRate = status.win_rate || 0;
+                winRateElement.textContent = `${winRate.toFixed(1)}%`;
+                winRateElement.className = winRate >= 50 ? 'info-value win-rate-positive' : 'info-value win-rate-negative';
                 
                 // Mostrar erros
                 const errorContainer = document.getElementById('error-container');
@@ -565,9 +586,10 @@ HTML_TEMPLATE = '''
                     errorContainer.innerHTML = '';
                 }
                 
-                // Log de status silencioso (sem spam)
-                if (Math.random() < 0.1) { // 10% das vezes
-                    addLog('📊 Status atualizado');
+                // Log apenas de trades importantes
+                if (status.total_trades && status.total_trades !== window.lastTradeCount) {
+                    addLog(`🎯 Novo trade executado! Total: ${status.total_trades}`);
+                    window.lastTradeCount = status.total_trades;
                 }
                 
             } catch (error) {
@@ -576,15 +598,17 @@ HTML_TEMPLATE = '''
             }
         }
         
-        // Atualizar status automaticamente a cada 20 segundos
-        setInterval(refreshStatus, 20000);
+        // Atualizar status automaticamente a cada 15 segundos
+        setInterval(refreshStatus, 15000);
         
         // Carregar status inicial
         refreshStatus();
         
-        addLog('🤖 Interface carregada - Sistema de trading agressivo pronto');
-        addLog('⚡ Configurado para máxima sensibilidade de sinais');
-        addLog('📈 Timeframe: 3m | Stop: 2% | Take Profit: 4%');
+        // Logs iniciais
+        addLog('🤖 Interface carregada - Sistema ultra agressivo ativo');
+        addLog('⚡ Threshold mínimo: 1 ponto | Cooldown: 60s');
+        addLog('📈 Timeframe: 3m | Stop: 1.5% | Take Profit: 2.5%');
+        addLog('🚀 Pronto para detectar sinais e executar trades!');
     </script>
 </body>
 </html>
@@ -592,7 +616,7 @@ HTML_TEMPLATE = '''
 
 @app.route('/')
 def home():
-    """Página inicial com interface melhorada"""
+    """Página inicial com interface otimizada"""
     return render_template_string(HTML_TEMPLATE)
 
 @app.route('/status')
@@ -616,7 +640,10 @@ def status():
             'current_price': float(bot_status.get('current_price', 0)) if bot_status.get('current_price') else None,
             'signal_strength': int(bot_status.get('signal_strength', 0)),
             'position_duration': float(bot_status.get('position_duration', 0)),
-            'trades_today': int(bot_status.get('trades_today', 0))
+            'trades_today': int(bot_status.get('trades_today', 0)),
+            'total_trades': int(bot_status.get('total_trades', 0)),
+            'successful_trades': int(bot_status.get('successful_trades', 0)),
+            'win_rate': float(bot_status.get('win_rate', 0.0))
         }
         
         return jsonify(response_data)
@@ -632,7 +659,10 @@ def status():
             'current_price': None,
             'signal_strength': 0,
             'position_duration': 0,
-            'trades_today': 0
+            'trades_today': 0,
+            'total_trades': 0,
+            'successful_trades': 0,
+            'win_rate': 0.0
         })
 
 @app.route('/health')
@@ -641,7 +671,10 @@ def health():
     return jsonify({
         'status': 'healthy',
         'timestamp': time.strftime('%Y-%m-%d %H:%M:%S'),
-        'mode': 'aggressive_scalping'
+        'mode': 'multi_indicator_precision',
+        'indicators': 'supertrend_algoalpha_atr_mfi',
+        'threshold': 5,
+        'confidence': '60%'
     })
 
 @app.route('/start')
@@ -652,7 +685,7 @@ def start_bot():
     if not bot_status['running']:
         bot_thread = threading.Thread(target=run_bot, daemon=True)
         bot_thread.start()
-        return jsonify({'message': 'Bot iniciado em modo agressivo!'})
+        return jsonify({'message': 'Bot iniciado - Multi-Indicador Preciso!'})
     else:
         return jsonify({'message': 'Bot já está rodando'})
 
@@ -678,7 +711,9 @@ def get_position():
                 'entry_price': trading_bot.entry_price,
                 'position_size': trading_bot.position_size,
                 'position_duration': bot_status.get('position_duration', 0),
-                'exchange_position': position_info
+                'exchange_position': position_info,
+                'total_trades': trading_bot.total_trades,
+                'successful_trades': trading_bot.successful_trades
             })
         except Exception as e:
             return jsonify({'error': str(e)})
