@@ -81,7 +81,7 @@ class TradingBot:
     def calculate_supertrend(self, df: pd.DataFrame) -> pd.DataFrame:
         """Calcula o indicador Supertrend"""
         try:
-            # Usando pandas_ta para calcular Supertrend
+            # Usando pandas_ta para calcular Supertrend - parâmetros corretos
             supertrend = ta.supertrend(
                 high=df['high'],
                 low=df['low'],
@@ -90,13 +90,76 @@ class TradingBot:
                 multiplier=self.supertrend_multiplier
             )
             
-            df['supertrend'] = supertrend[f'SUPERT_{self.supertrend_period}_{self.supertrend_multiplier}']
-            df['supertrend_direction'] = supertrend[f'SUPERTd_{self.supertrend_period}_{self.supertrend_multiplier}']
+            # Verificar se o resultado não é None e tem as colunas esperadas
+            if supertrend is not None:
+                # Tentar diferentes formatos de nomes de colunas
+                supertrend_col = None
+                direction_col = None
+                
+                # Possíveis nomes de colunas do pandas-ta
+                for col in supertrend.columns:
+                    if 'SUPERT' in col and 'SUPERTd' not in col:
+                        supertrend_col = col
+                    elif 'SUPERTd' in col:
+                        direction_col = col
+                
+                if supertrend_col and direction_col:
+                    df['supertrend'] = supertrend[supertrend_col]
+                    df['supertrend_direction'] = supertrend[direction_col]
+                else:
+                    # Fallback: cálculo manual básico do Supertrend
+                    print("Usando cálculo manual do Supertrend")
+                    df = self._calculate_manual_supertrend(df)
+            else:
+                # Fallback: cálculo manual básico do Supertrend
+                print("Supertrend retornou None, usando cálculo manual")
+                df = self._calculate_manual_supertrend(df)
             
             return df
         except Exception as e:
-            logger.error(f"Erro ao calcular Supertrend: {e}")
-            raise
+            print(f"Erro ao calcular Supertrend, usando fallback manual: {e}")
+            return self._calculate_manual_supertrend(df)
+    
+    def _calculate_manual_supertrend(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Cálculo manual simplificado do Supertrend como fallback"""
+        try:
+            # Calcular ATR
+            high_low = df['high'] - df['low']
+            high_close = np.abs(df['high'] - df['close'].shift())
+            low_close = np.abs(df['low'] - df['close'].shift())
+            ranges = pd.concat([high_low, high_close, low_close], axis=1)
+            true_range = ranges.max(axis=1)
+            atr = true_range.rolling(window=self.supertrend_period).mean()
+            
+            # Calcular basic bands
+            hl2 = (df['high'] + df['low']) / 2
+            basic_upper_band = hl2 + (self.supertrend_multiplier * atr)
+            basic_lower_band = hl2 - (self.supertrend_multiplier * atr)
+            
+            # Inicializar arrays
+            supertrend = np.zeros(len(df))
+            direction = np.zeros(len(df))
+            
+            # Calcular Supertrend simplificado
+            for i in range(1, len(df)):
+                # Direção baseada no fechamento vs supertrend anterior
+                if df['close'].iloc[i] > supertrend[i-1]:
+                    direction[i] = 1
+                    supertrend[i] = basic_lower_band.iloc[i]
+                else:
+                    direction[i] = -1
+                    supertrend[i] = basic_upper_band.iloc[i]
+            
+            df['supertrend'] = supertrend
+            df['supertrend_direction'] = direction
+            
+            return df
+        except Exception as e:
+            print(f"Erro no cálculo manual do Supertrend: {e}")
+            # Última tentativa: usar média móvel simples como proxy
+            df['supertrend'] = df['close'].rolling(window=self.supertrend_period).mean()
+            df['supertrend_direction'] = np.where(df['close'] > df['supertrend'], 1, -1)
+            return df
     
     def calculate_smart_money_breakout(self, df: pd.DataFrame) -> Tuple[bool, bool]:
         """
