@@ -25,7 +25,7 @@ class TradingBot:
         self.exchange = self._setup_exchange()
         self.symbol = 'ETHUSDT_UMCBL'
         self.timeframe = '3m'
-        self.leverage = 10
+        self.leverage = 15
         
         # Estado da posição
         self.current_position = None  # 'long', 'short', None
@@ -45,16 +45,18 @@ class TradingBot:
         self.algo_alpha_slow = 21
         self.algo_alpha_signal = 5
         
-        # Thresholds para precisão
-        self.mfi_oversold = 20
-        self.mfi_overbought = 80
+        # Thresholds para precisão aprimorada
+        self.mfi_oversold = 25  # Mais conservador
+        self.mfi_overbought = 75  # Mais conservador
         self.mfi_neutral = 50
         
-        # Controle de trades
+        # Controle de trades mais rigoroso
         self.total_trades = 0
         self.successful_trades = 0
         self.last_signal_time = None
-        self.signal_cooldown = 120  # 2 minutos para precisão
+        self.signal_cooldown = 180  # 3 minutos para melhor precisão
+        self.min_confidence = 70  # Confiança mínima aumentada
+        self.min_signal_strength = 6  # Threshold mais alto
         
         # Estado anterior para detectar mudanças
         self.last_supertrend_direction = None
@@ -326,10 +328,11 @@ class TradingBot:
             return {'overall_signal': 'neutral', 'signal_strength': 0, 'reasons': []}
     
     def generate_trading_signal(self, df: pd.DataFrame) -> Dict[str, Any]:
-        """Gera sinal de trading baseado na análise multi-indicador"""
+        """Gera sinal de trading baseado na análise multi-indicador com maior precisão"""
         try:
             analysis = self.analyze_market_conditions(df)
             latest = df.iloc[-1]
+            prev = df.iloc[-2] if len(df) >= 2 else latest
             
             signal = {
                 'action': 'hold',
@@ -343,30 +346,46 @@ class TradingBot:
             short_score = 0
             reasons = []
             
-            # 1. Supertrend (peso alto - 40%)
+            # 1. Supertrend (peso muito alto - 50%)
             if analysis['supertrend_bullish']:
-                long_score += 4
+                long_score += 5
                 reasons.append("Supertrend BULLISH")
             else:
-                short_score += 4
+                short_score += 5
                 reasons.append("Supertrend BEARISH")
             
-            # Bonus para mudança de direção do Supertrend
+            # Bonus substancial para mudança de direção do Supertrend
             if analysis['supertrend_changed']:
                 if analysis['supertrend_bullish']:
-                    long_score += 3
-                    reasons.append("Supertrend virou BULL")
+                    long_score += 4
+                    reasons.append("Supertrend VIROU BULL (forte)")
                 else:
-                    short_score += 3
-                    reasons.append("Supertrend virou BEAR")
+                    short_score += 4
+                    reasons.append("Supertrend VIROU BEAR (forte)")
             
-            # 2. AlgoAlpha (peso médio-alto - 30%)
+            # 2. AlgoAlpha (peso alto - 30%)
+            algo_alpha_strength = abs(latest['algo_alpha'])
             if analysis['algo_alpha_bullish']:
-                long_score += 3
-                reasons.append("AlgoAlpha BULLISH")
+                # Força baseada na intensidade do AlgoAlpha
+                if algo_alpha_strength > 0.5:
+                    long_score += 4
+                    reasons.append("AlgoAlpha BULL forte")
+                elif algo_alpha_strength > 0.2:
+                    long_score += 3
+                    reasons.append("AlgoAlpha BULL médio")
+                else:
+                    long_score += 2
+                    reasons.append("AlgoAlpha BULL fraco")
             else:
-                short_score += 3
-                reasons.append("AlgoAlpha BEARISH")
+                if algo_alpha_strength > 0.5:
+                    short_score += 4
+                    reasons.append("AlgoAlpha BEAR forte")
+                elif algo_alpha_strength > 0.2:
+                    short_score += 3
+                    reasons.append("AlgoAlpha BEAR médio")
+                else:
+                    short_score += 2
+                    reasons.append("AlgoAlpha BEAR fraco")
             
             # Bonus para mudança do AlgoAlpha
             if analysis['algo_alpha_changed']:
@@ -377,77 +396,115 @@ class TradingBot:
                     short_score += 2
                     reasons.append("AlgoAlpha virou BEAR")
             
-            # 3. MFI (peso médio - 20%)
-            if analysis['mfi_oversold'] and analysis['mfi_bullish']:
-                long_score += 2
+            # 3. MFI com lógica aprimorada (peso médio - 15%)
+            mfi_value = latest['mfi']
+            mfi_sma_value = latest['mfi_sma']
+            
+            # Condições mais específicas do MFI
+            if mfi_value <= self.mfi_oversold and mfi_value > prev['mfi']:
+                long_score += 3
                 reasons.append("MFI saindo de oversold")
-            elif analysis['mfi_overbought'] and not analysis['mfi_bullish']:
-                short_score += 2
+            elif mfi_value >= self.mfi_overbought and mfi_value < prev['mfi']:
+                short_score += 3
                 reasons.append("MFI saindo de overbought")
             elif analysis['mfi_bullish']:
-                long_score += 1
-                reasons.append("MFI bullish")
-            else:
-                short_score += 1
-                reasons.append("MFI bearish")
-            
-            # 4. ATR/Volatilidade (peso baixo - 10%)
-            if analysis['volatility_level'] == 'high':
-                # Alta volatilidade - reduzir confiança
-                long_score = max(0, long_score - 1)
-                short_score = max(0, short_score - 1)
-                reasons.append("Volatilidade alta - cautela")
-            elif analysis['volatility_level'] == 'low':
-                # Baixa volatilidade - pode ser breakout
-                if long_score > short_score:
+                if mfi_value > 60:
+                    long_score += 2
+                    reasons.append("MFI bullish forte")
+                else:
                     long_score += 1
+                    reasons.append("MFI bullish")
+            else:
+                if mfi_value < 40:
+                    short_score += 2
+                    reasons.append("MFI bearish forte")
                 else:
                     short_score += 1
-                reasons.append("Volatilidade baixa - possível breakout")
+                    reasons.append("MFI bearish")
             
-            # Determinar sinal final
+            # 4. ATR/Volatilidade refinado (peso baixo - 5%)
+            if analysis['volatility_level'] == 'high':
+                # Alta volatilidade - ser mais cauteloso
+                long_score = int(long_score * 0.9)
+                short_score = int(short_score * 0.9)
+                reasons.append("Volatilidade alta - reduzindo confiança")
+            elif analysis['volatility_level'] == 'low':
+                # Baixa volatilidade - pode indicar breakout iminente
+                if long_score > short_score:
+                    long_score += 1
+                    reasons.append("Volatilidade baixa - possível breakout BULL")
+                elif short_score > long_score:
+                    short_score += 1
+                    reasons.append("Volatilidade baixa - possível breakout BEAR")
+            
+            # 5. Confluência de sinais (bonus por alinhamento)
+            if long_score >= 8 and short_score <= 2:
+                long_score += 2
+                reasons.append("CONFLUÊNCIA BULLISH forte")
+            elif short_score >= 8 and long_score <= 2:
+                short_score += 2
+                reasons.append("CONFLUÊNCIA BEARISH forte")
+            
+            # Determinar sinal final com critérios mais rigorosos
             signal['reasons'] = reasons
             total_score = max(long_score, short_score)
             signal['strength'] = total_score
             
-            if long_score > short_score and long_score >= 5:  # Threshold para LONG
+            if long_score > short_score and long_score >= self.min_signal_strength:
                 signal['action'] = 'buy'
                 signal['direction'] = 'long'
-                signal['confidence'] = min(100, (long_score / 10) * 100)
-            elif short_score > long_score and short_score >= 5:  # Threshold para SHORT
+                signal['confidence'] = min(100, (long_score / 15) * 100)  # Máximo 15 pontos
+            elif short_score > long_score and short_score >= self.min_signal_strength:
                 signal['action'] = 'sell'
                 signal['direction'] = 'short'
-                signal['confidence'] = min(100, (short_score / 10) * 100)
+                signal['confidence'] = min(100, (short_score / 15) * 100)  # Máximo 15 pontos
             
             return signal
             
         except Exception as e:
-            logger.error(f"Erro ao gerar sinal: {e}")
+            logger.error(f"Erro crítico ao gerar sinal: {e}")
+            import traceback
+            logger.error(f"Traceback: {traceback.format_exc()}")
             return {'action': 'hold', 'direction': None, 'strength': 0, 'reasons': []}
     
     def should_enter_position(self, df: pd.DataFrame) -> Tuple[bool, str, int]:
-        """Decide se deve entrar em posição"""
+        """Decide se deve entrar em posição com critérios rigorosos"""
         try:
-            # Verificar cooldown
+            # Verificar cooldown rigoroso
             current_time = time.time()
             if self.last_signal_time and (current_time - self.last_signal_time) < self.signal_cooldown:
+                time_left = self.signal_cooldown - (current_time - self.last_signal_time)
+                logger.debug(f"Cooldown ativo - {time_left:.0f}s restantes")
                 return False, None, 0
             
-            # Gerar sinal
+            # Gerar sinal com análise aprimorada
             signal = self.generate_trading_signal(df)
             
-            if signal['action'] in ['buy', 'sell'] and signal['confidence'] >= 60:
-                logger.info(f"SINAL {signal['direction'].upper()} - Força: {signal['strength']}")
-                logger.info(f"Confiança: {signal['confidence']:.1f}%")
-                logger.info(f"Razões: {', '.join(signal['reasons'][:5])}")
+            # Critérios muito rigorosos para entrada
+            if (signal['action'] in ['buy', 'sell'] and 
+                signal['confidence'] >= self.min_confidence and 
+                signal['strength'] >= self.min_signal_strength):
+                
+                logger.info(f"SINAL {signal['direction'].upper()} QUALIFICADO")
+                logger.info(f"Força: {signal['strength']} | Confiança: {signal['confidence']:.1f}%")
+                logger.info(f"Principais razões: {', '.join(signal['reasons'][:3])}")
                 
                 self.last_signal_time = current_time
                 return True, signal['direction'], signal['strength']
-            
-            return False, None, signal['strength']
+            else:
+                # Log detalhado para debug
+                if signal['strength'] >= 3:
+                    logger.info(f"Sinal detectado mas não qualificado:")
+                    logger.info(f"- Força: {signal['strength']} (min: {self.min_signal_strength})")
+                    logger.info(f"- Confiança: {signal['confidence']:.1f}% (min: {self.min_confidence}%)")
+                    logger.info(f"- Ação: {signal['action']}")
+                
+                return False, None, signal['strength']
             
         except Exception as e:
-            logger.error(f"Erro na análise de entrada: {e}")
+            logger.error(f"Erro crítico na análise de entrada: {e}")
+            import traceback
+            logger.error(f"Traceback: {traceback.format_exc()}")
             return False, None, 0
     
     def should_close_position(self, df: pd.DataFrame, current_price: float) -> bool:
@@ -542,93 +599,171 @@ class TradingBot:
             return False
     
     def open_position(self, side: str, amount: float) -> bool:
-        """Abre uma nova posição"""
+        """Abre uma nova posição com verificações aprimoradas"""
         try:
             if amount <= 0:
-                logger.error("Quantidade inválida")
+                logger.error(f"Quantidade inválida: {amount}")
                 return False
             
-            # Configurar alavancagem
-            try:
-                self.exchange.set_leverage(self.leverage, self.symbol)
-            except Exception as e:
-                logger.warning(f"Aviso ao configurar alavancagem: {e}")
+            logger.info(f"Tentando abrir posição {side.upper()} com {amount} ETH")
             
-            # Criar ordem de mercado
+            # Configurar alavancagem com retry
+            leverage_set = False
+            for attempt in range(3):
+                try:
+                    result = self.exchange.set_leverage(self.leverage, self.symbol)
+                    logger.info(f"Alavancagem {self.leverage}x configurada: {result}")
+                    leverage_set = True
+                    break
+                except Exception as e:
+                    logger.warning(f"Tentativa {attempt + 1} falhou ao configurar alavancagem: {e}")
+                    time.sleep(1)
+            
+            if not leverage_set:
+                logger.warning("Não foi possível configurar alavancagem, continuando...")
+            
+            # Criar ordem de mercado com parâmetros otimizados
+            order_params = {
+                'type': 'market',
+                'timeInForce': 'IOC'  # Immediate or Cancel
+            }
+            
+            logger.info(f"Criando ordem {side} para {amount} ETH...")
             order = self.exchange.create_market_order(
                 symbol=self.symbol,
                 side=side,
-                amount=amount
+                amount=amount,
+                params=order_params
             )
             
-            # Aguardar processamento
-            time.sleep(3)
+            logger.info(f"Ordem criada: {order.get('id', 'N/A')}")
+            
+            # Aguardar processamento com verificação
+            time.sleep(2)
+            
+            # Verificar status da ordem
+            if order.get('id'):
+                try:
+                    order_status = self.exchange.fetch_order(order['id'], self.symbol)
+                    logger.info(f"Status da ordem: {order_status.get('status', 'N/A')}")
+                except Exception as e:
+                    logger.warning(f"Não foi possível verificar status da ordem: {e}")
             
             # Verificar execução
-            if order.get('status') == 'closed' or order.get('filled', 0) > 0:
+            filled_amount = float(order.get('filled', 0))
+            avg_price = float(order.get('average', 0)) or float(order.get('price', 0))
+            
+            if (order.get('status') == 'closed' or filled_amount > 0) and avg_price > 0:
                 # Atualizar estado
                 self.current_position = 'long' if side == 'buy' else 'short'
-                self.entry_price = float(order.get('price') or order.get('average') or 0)
-                self.position_size = float(order.get('filled', amount))
+                self.entry_price = avg_price
+                self.position_size = filled_amount
                 self.position_start_time = time.time()
                 self.total_trades += 1
                 
-                logger.info(f"POSIÇÃO {self.current_position.upper()} ABERTA")
-                logger.info(f"Preço entrada: ${self.entry_price:.4f}")
-                logger.info(f"Tamanho: {self.position_size} ETH")
+                logger.info(f"POSIÇÃO {self.current_position.upper()} ABERTA COM SUCESSO!")
+                logger.info(f"Preço de entrada: ${self.entry_price:.4f}")
+                logger.info(f"Quantidade preenchida: {self.position_size} ETH")
+                logger.info(f"Valor da posição: ${self.position_size * self.entry_price:.2f}")
+                logger.info(f"Trade #{self.total_trades}")
                 
                 return True
             else:
-                logger.error(f"Ordem não executada: {order}")
+                logger.error(f"Ordem não executada adequadamente:")
+                logger.error(f"- Status: {order.get('status', 'N/A')}")
+                logger.error(f"- Preenchido: {filled_amount} ETH")
+                logger.error(f"- Preço médio: ${avg_price:.4f}")
+                logger.error(f"- Ordem completa: {order}")
                 return False
                 
         except Exception as e:
-            logger.error(f"Erro ao abrir posição {side}: {e}")
+            logger.error(f"Erro crítico ao abrir posição {side}: {e}")
+            import traceback
+            logger.error(f"Traceback: {traceback.format_exc()}")
             return False
     
     def calculate_position_size(self) -> float:
-        """Calcula tamanho da posição"""
+        """Calcula tamanho da posição com verificação aprimorada"""
         try:
-            balance = self.exchange.fetch_balance()
-            usdt_balance = float(balance.get('USDT', {}).get('free', 0))
+            # Obter saldo com retry
+            balance = None
+            for attempt in range(3):
+                try:
+                    balance = self.exchange.fetch_balance()
+                    break
+                except Exception as e:
+                    logger.warning(f"Tentativa {attempt + 1} falhou ao obter saldo: {e}")
+                    time.sleep(1)
             
-            if usdt_balance <= 10:
-                logger.error(f"Saldo insuficiente: ${usdt_balance:.2f}")
+            if not balance:
+                logger.error("Não foi possível obter saldo após 3 tentativas")
                 return 0
             
-            # Usar 65% do saldo para trades precisos
-            position_value = usdt_balance * 0.65
+            # Verificar diferentes tipos de saldo USDT
+            usdt_free = float(balance.get('USDT', {}).get('free', 0))
+            usdt_total = float(balance.get('USDT', {}).get('total', 0))
             
-            # Obter preço atual
-            ticker = self.exchange.fetch_ticker(self.symbol)
-            current_price = float(ticker['last'])
+            logger.info(f"Saldo USDT - Livre: ${usdt_free:.2f}, Total: ${usdt_total:.2f}")
             
-            if current_price <= 0:
-                logger.error("Preço atual inválido")
+            # Usar o saldo disponível
+            available_balance = usdt_free
+            
+            if available_balance < 1:
+                logger.error(f"Saldo muito baixo: ${available_balance:.2f}")
                 return 0
             
-            # Calcular tamanho
-            position_size = position_value / current_price
+            # Obter preço atual com retry
+            current_price = None
+            for attempt in range(3):
+                try:
+                    ticker = self.exchange.fetch_ticker(self.symbol)
+                    current_price = float(ticker['last'])
+                    break
+                except Exception as e:
+                    logger.warning(f"Tentativa {attempt + 1} falhou ao obter preço: {e}")
+                    time.sleep(1)
             
-            # Aplicar limites da exchange
+            if not current_price or current_price <= 0:
+                logger.error("Não foi possível obter preço atual")
+                return 0
+            
+            # Calcular valor da posição com alavancagem
+            # Com alavancagem 15x, cada $1 pode controlar $15 em posição
+            position_value_usd = available_balance * 0.8 * self.leverage  # 80% do saldo com alavancagem
+            
+            # Converter para quantidade de ETH
+            position_size = position_value_usd / current_price
+            
+            # Obter limites da exchange
             market = self.exchange.market(self.symbol)
-            min_amount = float(market.get('limits', {}).get('amount', {}).get('min', 0.001))
-            max_amount = float(market.get('limits', {}).get('amount', {}).get('max', 1000))
+            limits = market.get('limits', {})
+            amount_limits = limits.get('amount', {})
             
+            min_amount = float(amount_limits.get('min', 0.001))
+            max_amount = float(amount_limits.get('max', 100))
+            
+            # Aplicar limites
             position_size = max(min_amount, min(position_size, max_amount))
             
-            # Precisão
+            # Aplicar precisão
             precision = market.get('precision', {}).get('amount', 4)
             position_size = round(position_size, precision)
             
-            logger.info(f"Saldo: ${usdt_balance:.2f} | Posição: ${position_value:.2f}")
-            logger.info(f"Preço ETH: ${current_price:.4f} | Tamanho: {position_size} ETH")
+            logger.info(f"Cálculo da posição:")
+            logger.info(f"- Saldo disponível: ${available_balance:.2f}")
+            logger.info(f"- Alavancagem: {self.leverage}x")
+            logger.info(f"- Valor da posição: ${position_value_usd:.2f}")
+            logger.info(f"- Preço ETH: ${current_price:.4f}")
+            logger.info(f"- Tamanho calculado: {position_size} ETH")
+            logger.info(f"- Limites: min={min_amount}, max={max_amount}")
             
             return position_size
             
         except Exception as e:
-            logger.error(f"Erro ao calcular posição: {e}")
-            return 0.001
+            logger.error(f"Erro crítico no cálculo da posição: {e}")
+            import traceback
+            logger.error(f"Traceback: {traceback.format_exc()}")
+            return 0
     
     def _reset_position_state(self):
         """Reseta o estado da posição"""
@@ -735,11 +870,12 @@ class TradingBot:
         logger.info(f"- AlgoAlpha: Fast{self.algo_alpha_fast}, Slow{self.algo_alpha_slow} (Complemento)")
         logger.info(f"- ATR: {self.atr_period} períodos (Volatilidade)")
         logger.info(f"- MFI: {self.mfi_period} períodos (Fluxo de dinheiro)")
-        logger.info("CONFIGURAÇÕES:")
-        logger.info(f"- Threshold mínimo: 5 pontos")
-        logger.info(f"- Confiança mínima: 60%")
+        logger.info("CONFIGURAÇÕES APRIMORADAS:")
+        logger.info(f"- Threshold mínimo: {self.min_signal_strength} pontos")
+        logger.info(f"- Confiança mínima: {self.min_confidence}%")
         logger.info(f"- Cooldown: {self.signal_cooldown}s")
         logger.info(f"- Tempo máximo posição: 30 min")
+        logger.info(f"- Alavancagem: {self.leverage}x")
         logger.info("=" * 80)
         
         while True:
