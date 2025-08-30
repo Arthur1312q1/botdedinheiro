@@ -1,7 +1,8 @@
-from flask import Flask, jsonify, render_template_string
+from flask import Flask, jsonify, render_template_string, request
 import threading
 import time
 import os
+import traceback
 from bot import TradingBot
 
 app = Flask(__name__)
@@ -37,19 +38,24 @@ def run_bot():
                 bot_status['entry_price'] = trading_bot.entry_price
                 bot_status['error'] = None
                 
-                # Calcular PnL se houver posição
-                if trading_bot.current_position and trading_bot.entry_price:
-                    try:
-                        ticker = trading_bot.exchange.fetch_ticker(trading_bot.symbol)
-                        current_price = float(ticker['last'])
-                        bot_status['current_price'] = current_price
-                        
+                # Obter preço atual sempre
+                try:
+                    ticker = trading_bot.exchange.fetch_ticker(trading_bot.symbol)
+                    current_price = float(ticker['last'])
+                    bot_status['current_price'] = current_price
+                    
+                    # Calcular PnL se houver posição
+                    if trading_bot.current_position and trading_bot.entry_price:
                         pnl_pct = ((current_price - trading_bot.entry_price) / trading_bot.entry_price) * 100
                         if trading_bot.current_position == 'short':
                             pnl_pct *= -1
-                        bot_status['pnl'] = pnl_pct
-                    except:
+                        bot_status['pnl'] = round(pnl_pct, 2)
+                    else:
                         bot_status['pnl'] = 0.0
+                except Exception as price_error:
+                    print(f"Erro ao obter preço: {price_error}")
+                    bot_status['current_price'] = None
+                    bot_status['pnl'] = 0.0
                 
                 # Aguardar 5 minutos
                 time.sleep(300)
@@ -57,12 +63,24 @@ def run_bot():
             except Exception as e:
                 bot_status['error'] = str(e)
                 print(f"Erro na execução do bot: {e}")
+                print(f"Traceback: {traceback.format_exc()}")
                 time.sleep(30)  # Aguarda 30 segundos em caso de erro
                 
     except Exception as e:
         bot_status['running'] = False
         bot_status['error'] = str(e)
         print(f"Erro fatal no bot: {e}")
+        print(f"Traceback: {traceback.format_exc()}")
+
+def get_current_price():
+    """Função auxiliar para obter preço atual"""
+    try:
+        if trading_bot and trading_bot.exchange:
+            ticker = trading_bot.exchange.fetch_ticker('ETHUSDT_UMCBL')
+            return float(ticker['last'])
+    except Exception as e:
+        print(f"Erro ao obter preço atual: {e}")
+    return None
 
 HTML_TEMPLATE = '''
 <!DOCTYPE html>
@@ -376,6 +394,16 @@ HTML_TEMPLATE = '''
         async function refreshStatus() {
             try {
                 const response = await fetch('/status');
+                
+                if (!response.ok) {
+                    throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+                }
+                
+                const contentType = response.headers.get('content-type');
+                if (!contentType || !contentType.includes('application/json')) {
+                    throw new Error(`Resposta não é JSON. Content-Type: ${contentType}`);
+                }
+                
                 const status = await response.json();
                 
                 // Atualizar indicador de status
@@ -393,14 +421,15 @@ HTML_TEMPLATE = '''
                 // Atualizar informações
                 document.getElementById('last-update').textContent = status.last_update || '-';
                 document.getElementById('current-position').textContent = status.current_position || 'Nenhuma';
-                document.getElementById('entry-price').textContent = status.entry_price ? `$${status.entry_price.toFixed(4)}` : '-';
-                document.getElementById('current-price').textContent = status.current_price ? `$${status.current_price.toFixed(4)}` : '-';
+                document.getElementById('entry-price').textContent = status.entry_price ? `${parseFloat(status.entry_price).toFixed(4)}` : '-';
+                document.getElementById('current-price').textContent = status.current_price ? `${parseFloat(status.current_price).toFixed(4)}` : '-';
                 
                 // Atualizar P&L
                 const pnlElement = document.getElementById('pnl');
-                if (status.pnl !== undefined && status.pnl !== 0) {
-                    pnlElement.textContent = `${status.pnl > 0 ? '+' : ''}${status.pnl.toFixed(2)}%`;
-                    pnlElement.className = status.pnl > 0 ? 'info-value pnl-positive' : 'info-value pnl-negative';
+                if (status.pnl !== undefined && status.pnl !== null && status.pnl !== 0) {
+                    const pnlValue = parseFloat(status.pnl);
+                    pnlElement.textContent = `${pnlValue > 0 ? '+' : ''}${pnlValue.toFixed(2)}%`;
+                    pnlElement.className = pnlValue > 0 ? 'info-value pnl-positive' : 'info-value pnl-negative';
                 } else {
                     pnlElement.textContent = '-';
                     pnlElement.className = 'info-value';
@@ -418,6 +447,7 @@ HTML_TEMPLATE = '''
                 
             } catch (error) {
                 addLog(`Erro ao atualizar status: ${error.message}`);
+                console.error('Erro detalhado:', error);
             }
         }
         
@@ -441,7 +471,36 @@ def home():
 @app.route('/status')
 def status():
     """Endpoint para verificar o status do bot"""
-    return jsonify(bot_status)
+    try:
+        # Sempre tentar obter preço atual, mesmo sem bot rodando
+        if not bot_status.get('current_price'):
+            current_price = get_current_price()
+            if current_price:
+                bot_status['current_price'] = current_price
+        
+        # Garantir que todos os campos existam
+        response_data = {
+            'running': bool(bot_status.get('running', False)),
+            'last_update': bot_status.get('last_update'),
+            'current_position': bot_status.get('current_position'),
+            'error': bot_status.get('error'),
+            'pnl': float(bot_status.get('pnl', 0.0)),
+            'entry_price': float(bot_status.get('entry_price', 0)) if bot_status.get('entry_price') else None,
+            'current_price': float(bot_status.get('current_price', 0)) if bot_status.get('current_price') else None
+        }
+        
+        return jsonify(response_data)
+    except Exception as e:
+        print(f"Erro no endpoint /status: {e}")
+        return jsonify({
+            'running': False,
+            'error': f'Erro interno: {str(e)}',
+            'last_update': None,
+            'current_position': None,
+            'pnl': 0.0,
+            'entry_price': None,
+            'current_price': None
+        })
 
 @app.route('/health')
 def health():
