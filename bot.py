@@ -23,7 +23,7 @@ class TradingBot:
         """Inicializa o bot de trading"""
         # ConfiguraÃ§Ãµes da exchange
         self.exchange = self._setup_exchange()
-        self.symbol = 'ETHUSDT'
+        self.symbol = 'ETHUSDT_UMCBL'
         self.timeframe = '15m'
         self.leverage = 10
         self.stop_loss_percentage = 0.01  # 1%
