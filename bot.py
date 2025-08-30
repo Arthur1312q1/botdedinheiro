@@ -1,4 +1,64 @@
-import ccxt
+def should_enter_position(self, df: pd.DataFrame, side: str) -> bool:
+        """Lógica melhorada para decisão de entrada em posição"""
+        try:
+            # Verificar cooldown entre sinais
+            current_time = time.time()
+            if self.last_signal_time and (current_time - self.last_signal_time) < self.signal_cooldown:
+                return False
+            
+            # Análise completa do mercado
+            analysis = self.analyze_market_conditions(df)
+            
+            # Critérios mínimos para qualquer entrada
+            if analysis['signal_quality'] < 60:  # Qualidade mínima de 60%
+                return False
+            
+            if not analysis['volume_confirmation']:  # Volume deve confirmar
+                return False
+            
+            latest = df.iloc[-1]
+            
+            if side == 'long':
+                # Condições para entrada LONG
+                conditions = [
+                    analysis['trend_strength'] == 1,  # Tendência bullish
+                    analysis['momentum'] >= 0,        # Momentum positivo ou neutro
+                    latest['rsi'] < 70,              # RSI não sobrecomprado
+                    latest['close'] > latest['supertrend'],  # Preço acima do Supertrend
+                    latest['macd'] > latest['macd_signal'],  # MACD bullish
+                    latest['ema_fast'] > latest['ema_slow']  # EMAs bullish
+                ]
+                
+                # Pelo menos 4 das 6 condições devem ser atendidas
+                score = sum(conditions)
+                if score >= 4:
+                    logger.info(f"Condições LONG atendidas: {score}/6")
+                    self.last_signal_time = current_time
+                    return True
+                    
+            elif side == 'short':
+                # Condições para entrada SHORT
+                conditions = [
+                    analysis['trend_strength'] == -1, # Tendência bearish
+                    analysis['momentum'] <= 0,        # Momentum negativo ou neutro
+                    latest['rsi'] > 30,              # RSI não sobrevendido
+                    latest['close'] < latest['supertrend'],  # Preço abaixo do Supertrend
+                    latest['macd'] < latest['macd_signal'],  # MACD bearish
+                    latest['ema_fast'] < latest['ema_slow']  # EMAs bearish
+                ]
+                
+                # Pelo menos 4 das 6 condições devem ser atendidas
+                score = sum(conditions)
+                if score >= 4:
+                    logger.info(f"Condições SHORT atendidas: {score}/6")
+                    self.last_signal_time = current_time
+                    return True
+            
+            return False
+            
+        except Exception as e:
+            logger.error(f"Erro na análise de entrada: {e}")
+            return Falseimport ccxt
 import pandas as pd
 import pandas_ta as ta
 import numpy as np
