@@ -699,17 +699,29 @@ class TradingBot:
                 logger.error("Não foi possível obter saldo após 3 tentativas")
                 return 0
             
-            # Verificar diferentes tipos de saldo USDT
+            # Verificar diferentes tipos de saldo USDT com mais detalhes
             usdt_free = float(balance.get('USDT', {}).get('free', 0))
             usdt_total = float(balance.get('USDT', {}).get('total', 0))
+            usdt_used = float(balance.get('USDT', {}).get('used', 0))
             
-            logger.info(f"Saldo USDT - Livre: ${usdt_free:.2f}, Total: ${usdt_total:.2f}")
+            logger.info(f"Detalhes do saldo USDT:")
+            logger.info(f"- Livre: ${usdt_free:.2f}")
+            logger.info(f"- Total: ${usdt_total:.2f}")  
+            logger.info(f"- Em uso: ${usdt_used:.2f}")
             
             # Usar o saldo disponível
             available_balance = usdt_free
             
-            if available_balance < 1:
-                logger.error(f"Saldo muito baixo: ${available_balance:.2f}")
+            # Se o saldo livre é muito baixo, mas há saldo total, pode ter posição aberta
+            if available_balance < 1 and usdt_total >= 1:
+                logger.warning(f"Saldo livre baixo mas total disponível - possível posição aberta")
+                logger.info(f"Tentando usar 50% do saldo total como fallback")
+                available_balance = usdt_total * 0.5
+            
+            # Threshold mínimo muito baixo para funcionar com pouco saldo
+            if available_balance < 0.5:
+                logger.error(f"Saldo realmente insuficiente: ${available_balance:.2f}")
+                logger.error("Necessário pelo menos $0.50 para operar")
                 return 0
             
             # Obter preço atual com retry
@@ -727,35 +739,85 @@ class TradingBot:
                 logger.error("Não foi possível obter preço atual")
                 return 0
             
-            # Calcular valor da posição com alavancagem
+            # Calcular valor da posição com alavancagem (mais conservador)
             # Com alavancagem 15x, cada $1 pode controlar $15 em posição
-            position_value_usd = available_balance * 0.8 * self.leverage  # 80% do saldo com alavancagem
+            # Vamos usar apenas 60% do saldo com alavancagem para ser mais seguro
+            leverage_multiplier = min(self.leverage, 10)  # Cap no máximo 10x para segurança
+            position_value_usd = available_balance * 0.6 * leverage_multiplier
+            
+            logger.info(f"Usando alavancagem efetiva: {leverage_multiplier}x")
+            
+            # Se ainda assim o valor for muito baixo, usar um mínimo
+            if position_value_usd < 10:
+                position_value_usd = available_balance * leverage_multiplier * 0.8
+                logger.info(f"Valor baixo, usando 80% do saldo: ${position_value_usd:.2f}")
             
             # Converter para quantidade de ETH
             position_size = position_value_usd / current_price
             
-            # Obter limites da exchange
-            market = self.exchange.market(self.symbol)
-            limits = market.get('limits', {})
-            amount_limits = limits.get('amount', {})
+            logger.info(f"Cálculo detalhado:")
+            logger.info(f"- Saldo disponível: ${available_balance:.2f}")
+            logger.info(f"- Alavancagem efetiva: {leverage_multiplier}x")
+            logger.info(f"- Valor da posição USD: ${position_value_usd:.2f}")
+            logger.info(f"- Preço ETH: ${current_price:.4f}")
+            logger.info(f"- Tamanho calculado: {position_size:.6f} ETH")
             
-            min_amount = float(amount_limits.get('min', 0.001))
-            max_amount = float(amount_limits.get('max', 100))
+            # Obter limites da exchange com tratamento seguro
+            try:
+                market = self.exchange.market(self.symbol)
+                limits = market.get('limits', {})
+                amount_limits = limits.get('amount', {})
+                
+                # Tratamento seguro dos limites
+                min_amount_raw = amount_limits.get('min')
+                max_amount_raw = amount_limits.get('max')
+                
+                min_amount = float(min_amount_raw) if min_amount_raw is not None else 0.001
+                max_amount = float(max_amount_raw) if max_amount_raw is not None else 100.0
+                
+                logger.info(f"Limites da exchange - Min: {min_amount}, Max: {max_amount}")
+                
+            except Exception as e:
+                logger.warning(f"Erro ao obter limites da exchange: {e}")
+                # Valores padrão seguros
+                min_amount = 0.001
+                max_amount = 100.0
+                logger.info(f"Usando limites padrão - Min: {min_amount}, Max: {max_amount}")
             
             # Aplicar limites
             position_size = max(min_amount, min(position_size, max_amount))
             
-            # Aplicar precisão
-            precision = market.get('precision', {}).get('amount', 4)
-            position_size = round(position_size, precision)
+            # Aplicar precisão com tratamento seguro
+            try:
+                precision = market.get('precision', {}).get('amount', 4)
+                if precision is None:
+                    precision = 4
+                position_size = round(position_size, int(precision))
+            except Exception as e:
+                logger.warning(f"Erro ao aplicar precisão: {e}")
+                position_size = round(position_size, 4)
+            
             
             logger.info(f"Cálculo da posição:")
             logger.info(f"- Saldo disponível: ${available_balance:.2f}")
-            logger.info(f"- Alavancagem: {self.leverage}x")
+            logger.info(f"- Alavancagem efetiva: {leverage_multiplier}x")
             logger.info(f"- Valor da posição: ${position_value_usd:.2f}")
             logger.info(f"- Preço ETH: ${current_price:.4f}")
-            logger.info(f"- Tamanho calculado: {position_size} ETH")
-            logger.info(f"- Limites: min={min_amount}, max={max_amount}")
+            logger.info(f"- Tamanho calculado: {position_size:.6f} ETH")
+            logger.info(f"- Limites aplicados: min={min_amount}, max={max_amount}")
+            logger.info(f"- Tamanho final: {position_size:.6f} ETH")
+            
+            # Verificação final de sanidade
+            if position_size < min_amount:
+                logger.error(f"Tamanho calculado {position_size:.6f} menor que mínimo {min_amount}")
+                return 0
+                
+            if position_size * current_price < 1:
+                logger.error(f"Valor da posição muito baixo: ${position_size * current_price:.2f}")
+                logger.error("O valor mínimo da posição deve ser pelo menos $1.00")
+                return 0
+                
+            logger.info(f"POSIÇÃO VÁLIDA CALCULADA: {position_size:.6f} ETH (${position_size * current_price:.2f})")
             
             return position_size
             
