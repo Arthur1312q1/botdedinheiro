@@ -187,13 +187,13 @@ class TradingBot:
         self.mfi_overbought = 75  # Mais conservador
         self.mfi_neutral = 50
         
-        # Controle de trades mais rigoroso
+        # Controle de trades - estratégia de reversão contínua
         self.total_trades = 0
         self.successful_trades = 0
         self.last_signal_time = None
-        self.signal_cooldown = 180  # 3 minutos para melhor precisão
-        self.min_confidence = 70  # Confiança mínima aumentada
-        self.min_signal_strength = 6  # Threshold mais alto
+        self.signal_cooldown = 60  # 1 minuto apenas para evitar trades repetidos
+        self.min_confidence = 60  # Confiança moderada
+        self.min_signal_strength = 3  # Threshold mais baixo para facilitar trades
         
         # Estado anterior para detectar mudanças
         self.last_supertrend_direction = None
@@ -468,7 +468,7 @@ class TradingBot:
             return {'overall_signal': 'neutral', 'signal_strength': 0, 'reasons': []}
     
     def generate_trading_signal(self, df: pd.DataFrame) -> Dict[str, Any]:
-        """Gera sinal de trading baseado na análise multi-indicador com maior precisão"""
+        """Gera sinal de trading baseado no Supertrend como indicador principal"""
         try:
             analysis = self.analyze_market_conditions(df)
             latest = df.iloc[-1]
@@ -482,122 +482,59 @@ class TradingBot:
                 'confidence': 0
             }
             
-            long_score = 0
-            short_score = 0
-            reasons = []
-            
-            # 1. Supertrend (peso muito alto - 50%)
+            # SUPERTREND É O INDICADOR PRINCIPAL - decide a direção
             if analysis['supertrend_bullish']:
-                long_score += 5
-                reasons.append("Supertrend BULLISH")
-            else:
-                short_score += 5
-                reasons.append("Supertrend BEARISH")
-            
-            # Bonus substancial para mudança de direção do Supertrend
-            if analysis['supertrend_changed']:
-                if analysis['supertrend_bullish']:
-                    long_score += 4
-                    reasons.append("Supertrend VIROU BULL (forte)")
-                else:
-                    short_score += 4
-                    reasons.append("Supertrend VIROU BEAR (forte)")
-            
-            # 2. AlgoAlpha (peso alto - 30%)
-            algo_alpha_strength = abs(latest['algo_alpha'])
-            if analysis['algo_alpha_bullish']:
-                # Força baseada na intensidade do AlgoAlpha
-                if algo_alpha_strength > 0.5:
-                    long_score += 4
-                    reasons.append("AlgoAlpha BULL forte")
-                elif algo_alpha_strength > 0.2:
-                    long_score += 3
-                    reasons.append("AlgoAlpha BULL médio")
-                else:
-                    long_score += 2
-                    reasons.append("AlgoAlpha BULL fraco")
-            else:
-                if algo_alpha_strength > 0.5:
-                    short_score += 4
-                    reasons.append("AlgoAlpha BEAR forte")
-                elif algo_alpha_strength > 0.2:
-                    short_score += 3
-                    reasons.append("AlgoAlpha BEAR médio")
-                else:
-                    short_score += 2
-                    reasons.append("AlgoAlpha BEAR fraco")
-            
-            # Bonus para mudança do AlgoAlpha
-            if analysis['algo_alpha_changed']:
-                if analysis['algo_alpha_bullish']:
-                    long_score += 2
-                    reasons.append("AlgoAlpha virou BULL")
-                else:
-                    short_score += 2
-                    reasons.append("AlgoAlpha virou BEAR")
-            
-            # 3. MFI com lógica aprimorada (peso médio - 15%)
-            mfi_value = latest['mfi']
-            mfi_sma_value = latest['mfi_sma']
-            
-            # Condições mais específicas do MFI
-            if mfi_value <= self.mfi_oversold and mfi_value > prev['mfi']:
-                long_score += 3
-                reasons.append("MFI saindo de oversold")
-            elif mfi_value >= self.mfi_overbought and mfi_value < prev['mfi']:
-                short_score += 3
-                reasons.append("MFI saindo de overbought")
-            elif analysis['mfi_bullish']:
-                if mfi_value > 60:
-                    long_score += 2
-                    reasons.append("MFI bullish forte")
-                else:
-                    long_score += 1
-                    reasons.append("MFI bullish")
-            else:
-                if mfi_value < 40:
-                    short_score += 2
-                    reasons.append("MFI bearish forte")
-                else:
-                    short_score += 1
-                    reasons.append("MFI bearish")
-            
-            # 4. ATR/Volatilidade refinado (peso baixo - 5%)
-            if analysis['volatility_level'] == 'high':
-                # Alta volatilidade - ser mais cauteloso
-                long_score = int(long_score * 0.9)
-                short_score = int(short_score * 0.9)
-                reasons.append("Volatilidade alta - reduzindo confiança")
-            elif analysis['volatility_level'] == 'low':
-                # Baixa volatilidade - pode indicar breakout iminente
-                if long_score > short_score:
-                    long_score += 1
-                    reasons.append("Volatilidade baixa - possível breakout BULL")
-                elif short_score > long_score:
-                    short_score += 1
-                    reasons.append("Volatilidade baixa - possível breakout BEAR")
-            
-            # 5. Confluência de sinais (bonus por alinhamento)
-            if long_score >= 8 and short_score <= 2:
-                long_score += 2
-                reasons.append("CONFLUÊNCIA BULLISH forte")
-            elif short_score >= 8 and long_score <= 2:
-                short_score += 2
-                reasons.append("CONFLUÊNCIA BEARISH forte")
-            
-            # Determinar sinal final com critérios mais rigorosos
-            signal['reasons'] = reasons
-            total_score = max(long_score, short_score)
-            signal['strength'] = total_score
-            
-            if long_score > short_score and long_score >= self.min_signal_strength:
-                signal['action'] = 'buy'
                 signal['direction'] = 'long'
-                signal['confidence'] = min(100, (long_score / 15) * 100)  # Máximo 15 pontos
-            elif short_score > long_score and short_score >= self.min_signal_strength:
-                signal['action'] = 'sell'
+                signal['strength'] = 5  # Base forte do Supertrend
+                signal['reasons'].append("Supertrend BULLISH (principal)")
+            else:
                 signal['direction'] = 'short'
-                signal['confidence'] = min(100, (short_score / 15) * 100)  # Máximo 15 pontos
+                signal['strength'] = 5  # Base forte do Supertrend
+                signal['reasons'].append("Supertrend BEARISH (principal)")
+            
+            # INDICADORES SECUNDÁRIOS para confirmação (não para decidir direção)
+            confirmation_score = 0
+            
+            # AlgoAlpha como confirmação
+            if signal['direction'] == 'long' and analysis['algo_alpha_bullish']:
+                confirmation_score += 2
+                signal['reasons'].append("AlgoAlpha confirma BULL")
+            elif signal['direction'] == 'short' and not analysis['algo_alpha_bullish']:
+                confirmation_score += 2
+                signal['reasons'].append("AlgoAlpha confirma BEAR")
+            
+            # MFI como confirmação
+            mfi_value = latest['mfi']
+            if signal['direction'] == 'long':
+                if mfi_value <= 40:  # Oversold favorece compra
+                    confirmation_score += 2
+                    signal['reasons'].append("MFI oversold confirma BULL")
+                elif mfi_value <= 60:  # Neutro ainda OK
+                    confirmation_score += 1
+                    signal['reasons'].append("MFI neutro OK para BULL")
+            else:  # short
+                if mfi_value >= 60:  # Overbought favorece venda
+                    confirmation_score += 2
+                    signal['reasons'].append("MFI overbought confirma BEAR")
+                elif mfi_value >= 40:  # Neutro ainda OK
+                    confirmation_score += 1
+                    signal['reasons'].append("MFI neutro OK para BEAR")
+            
+            # ATR para volatilidade (não bloqueia, apenas ajusta confiança)
+            if analysis['volatility_level'] == 'high':
+                signal['reasons'].append("Alta volatilidade detectada")
+            elif analysis['volatility_level'] == 'low':
+                confirmation_score += 1
+                signal['reasons'].append("Volatilidade adequada")
+            
+            # Força final = Supertrend + confirmações
+            signal['strength'] += confirmation_score
+            
+            # Calcular confiança baseada na força total
+            signal['confidence'] = min(100, (signal['strength'] / 8) * 100)
+            
+            # SEMPRE GERAR SINAL (Supertrend decide)
+            signal['action'] = 'buy' if signal['direction'] == 'long' else 'sell'
             
             return signal
             
@@ -608,111 +545,116 @@ class TradingBot:
             return {'action': 'hold', 'direction': None, 'strength': 0, 'reasons': []}
     
     def should_enter_position(self, df: pd.DataFrame) -> Tuple[bool, str, int]:
-        """Decide se deve entrar em posição com critérios rigorosos"""
+        """Decide se deve mudar de posição baseado no Supertrend + confirmação"""
         try:
-            # Verificar cooldown rigoroso
+            # Verificar cooldown apenas para evitar spam
             current_time = time.time()
             if self.last_signal_time and (current_time - self.last_signal_time) < self.signal_cooldown:
-                time_left = self.signal_cooldown - (current_time - self.last_signal_time)
-                logger.debug(f"Cooldown ativo - {time_left:.0f}s restantes")
                 return False, None, 0
             
-            # Gerar sinal com análise aprimorada
+            # Gerar sinal baseado no Supertrend
             signal = self.generate_trading_signal(df)
             
-            # Critérios muito rigorosos para entrada
-            if (signal['action'] in ['buy', 'sell'] and 
-                signal['confidence'] >= self.min_confidence and 
-                signal['strength'] >= self.min_signal_strength):
-                
-                logger.info(f"SINAL {signal['direction'].upper()} QUALIFICADO")
+            # Se o Supertrend mudou de direção OU temos confirmação suficiente
+            supertrend_direction = 'long' if signal['direction'] == 'long' else 'short'
+            
+            # Verificar se precisa mudar de posição
+            needs_change = False
+            
+            if not self.current_position:
+                # Sem posição - entrar na direção do Supertrend
+                needs_change = True
+                logger.info(f"SEM POSIÇÃO - Seguindo Supertrend para {supertrend_direction.upper()}")
+            elif self.current_position != supertrend_direction:
+                # Posição contrária ao Supertrend - precisa reverter
+                needs_change = True
+                logger.info(f"REVERSÃO DETECTADA - {self.current_position.upper()} -> {supertrend_direction.upper()}")
+            
+            if needs_change and signal['strength'] >= self.min_signal_strength:
+                logger.info(f"SINAL DE MUDANÇA CONFIRMADO")
+                logger.info(f"Direção: {supertrend_direction.upper()}")
                 logger.info(f"Força: {signal['strength']} | Confiança: {signal['confidence']:.1f}%")
-                logger.info(f"Principais razões: {', '.join(signal['reasons'][:3])}")
+                logger.info(f"Razões: {', '.join(signal['reasons'][:3])}")
                 
                 self.last_signal_time = current_time
-                return True, signal['direction'], signal['strength']
-            else:
-                # Log detalhado para debug
-                if signal['strength'] >= 3:
-                    logger.info(f"Sinal detectado mas não qualificado:")
-                    logger.info(f"- Força: {signal['strength']} (min: {self.min_signal_strength})")
-                    logger.info(f"- Confiança: {signal['confidence']:.1f}% (min: {self.min_confidence}%)")
-                    logger.info(f"- Ação: {signal['action']}")
-                
-                return False, None, signal['strength']
-            
-        except Exception as e:
-            logger.error(f"Erro crítico na análise de entrada: {e}")
-            import traceback
-            logger.error(f"Traceback: {traceback.format_exc()}")
-            return False, None, 0
-    
-    def should_enter_position_fast(self, df: pd.DataFrame, current_price: float) -> Tuple[bool, str, int]:
-        """Análise rápida para entrada baseada em movimento de preço significativo"""
-        try:
-            # Análise expedita com threshold reduzido para movimento rápido
-            signal = self.generate_trading_signal(df)
-            
-            # Threshold mais baixo para análise rápida
-            fast_threshold = max(4, self.min_signal_strength - 2)
-            fast_confidence = max(50, self.min_confidence - 20)
-            
-            if (signal['action'] in ['buy', 'sell'] and 
-                signal['confidence'] >= fast_confidence and 
-                signal['strength'] >= fast_threshold):
-                
-                logger.warning(f"SINAL RÁPIDO {signal['direction'].upper()}")
-                logger.warning(f"Força: {signal['strength']} (fast_threshold: {fast_threshold})")
-                logger.warning(f"Confiança: {signal['confidence']:.1f}% (fast_min: {fast_confidence}%)")
-                
-                return True, signal['direction'], signal['strength']
+                return True, supertrend_direction, signal['strength']
             
             return False, None, signal['strength']
             
         except Exception as e:
-            logger.error(f"Erro na análise rápida: {e}")
+            logger.error(f"Erro crítico na análise de entrada: {e}")
             return False, None, 0
     
-    def should_close_position(self, df: pd.DataFrame, current_price: float) -> bool:
-        """Verifica se deve fechar posição atual"""
+    def reverse_position(self, new_direction: str, position_size: float) -> bool:
+        """Reverte a posição atual para a nova direção"""
         try:
-            if not self.current_position or not self.entry_price:
+            logger.info(f"INICIANDO REVERSÃO: {self.current_position.upper()} -> {new_direction.upper()}")
+            
+            # 1. Fechar posição atual
+            if self.current_position:
+                position_info = self.get_position_info()
+                if position_info:
+                    close_side = 'buy' if position_info['side'] == 'short' else 'sell'
+                    
+                    close_order = self.exchange.create_market_order(
+                        symbol=self.symbol,
+                        side=close_side,
+                        amount=position_info['size'],
+                        params={'reduceOnly': True}
+                    )
+                    
+                    # Calcular resultado do trade
+                    if position_info['percentage'] > 0:
+                        self.successful_trades += 1
+                        logger.info(f"TRADE LUCRO: +{position_info['percentage']:.2f}%")
+                    else:
+                        logger.info(f"TRADE PREJUÍZO: {position_info['percentage']:.2f}%")
+                    
+                    logger.info(f"Posição {self.current_position.upper()} fechada")
+                    time.sleep(1)  # Aguardar processamento
+            
+            # 2. Abrir nova posição na direção oposta
+            new_side = 'buy' if new_direction == 'long' else 'sell'
+            
+            open_order = self.exchange.create_market_order(
+                symbol=self.symbol,
+                side=new_side,
+                amount=position_size
+            )
+            
+            # Verificar execução
+            filled_amount = float(open_order.get('filled', 0))
+            avg_price = float(open_order.get('average', 0)) or float(open_order.get('price', 0))
+            
+            if (open_order.get('status') == 'closed' or filled_amount > 0) and avg_price > 0:
+                # Atualizar estado
+                self.current_position = new_direction
+                self.entry_price = avg_price
+                self.position_size = filled_amount
+                self.position_start_time = time.time()
+                self.total_trades += 1
+                
+                logger.info(f"REVERSÃO COMPLETA!")
+                logger.info(f"Nova posição {new_direction.upper()}: {filled_amount} ETH @ ${avg_price:.4f}")
+                logger.info(f"Trade #{self.total_trades}")
+                
+                return True
+            else:
+                logger.error("Falha na abertura da nova posição")
+                self._reset_position_state()
                 return False
-            
-            # Gerar análise atual
-            analysis = self.analyze_market_conditions(df)
-            
-            # 1. Supertrend mudou de direção (principal critério)
-            if analysis['supertrend_changed']:
-                if self.current_position == 'long' and not analysis['supertrend_bullish']:
-                    logger.info("Fechando LONG - Supertrend virou BEARISH")
-                    return True
-                elif self.current_position == 'short' and analysis['supertrend_bullish']:
-                    logger.info("Fechando SHORT - Supertrend virou BULLISH")
-                    return True
-            
-            # 2. AlgoAlpha forte contrário
-            signal = self.generate_trading_signal(df)
-            if signal['confidence'] >= 80:
-                if self.current_position == 'long' and signal['direction'] == 'short':
-                    logger.info("Fechando LONG - AlgoAlpha forte BEARISH")
-                    return True
-                elif self.current_position == 'short' and signal['direction'] == 'long':
-                    logger.info("Fechando SHORT - AlgoAlpha forte BULLISH")
-                    return True
-            
-            # 3. Tempo máximo (30 minutos)
-            if self.position_start_time:
-                position_duration = time.time() - self.position_start_time
-                if position_duration > 1800:  # 30 minutos
-                    logger.info(f"Fechando por tempo limite: {position_duration/60:.1f} min")
-                    return True
-            
-            return False
-            
+                
         except Exception as e:
-            logger.error(f"Erro na verificação de fechamento: {e}")
+            logger.error(f"Erro crítico na reversão: {e}")
+            import traceback
+            logger.error(f"Traceback: {traceback.format_exc()}")
             return False
+    
+    def should_close_position(self, df: pd.DataFrame, current_price: float) -> bool:
+        """Esta função não é mais necessária - a estratégia sempre reverte posições"""
+        # Com a estratégia de reversão contínua, não fechamos posições
+        # Apenas revertemos quando o Supertrend mudar
+        return False
     
     def get_position_info(self) -> Optional[Dict[str, Any]]:
         """Obtém informações da posição atual"""
@@ -733,7 +675,7 @@ class TradingBot:
             return None
     
     def close_position(self) -> bool:
-        """Fecha a posição atual"""
+        """Fecha a posição atual (usado apenas para fechamento manual via interface)"""
         try:
             position_info = self.get_position_info()
             if not position_info:
@@ -754,7 +696,7 @@ class TradingBot:
             if position_info['percentage'] > 0:
                 self.successful_trades += 1
             
-            logger.info(f"POSIÇÃO {self.current_position.upper()} FECHADA")
+            logger.info(f"POSIÇÃO {self.current_position.upper()} FECHADA MANUALMENTE")
             logger.info(f"P&L: {position_info['percentage']:.2f}%")
             
             self._reset_position_state()
@@ -991,19 +933,12 @@ class TradingBot:
         self.position_start_time = None
     
     def run_strategy(self):
-        """Executa uma iteração da estratégia com preços em tempo real"""
+        """Executa estratégia de reversão contínua baseada no Supertrend"""
         try:
-            # Verificar se há ordem de fechamento instantâneo
-            if hasattr(self, 'force_close_next') and self.force_close_next:
-                logger.warning(f"FECHAMENTO FORÇADO: {getattr(self, 'close_reason', 'Não especificado')}")
-                self.close_position()
-                self.force_close_next = False
-                return
-                
             logger.info("=" * 70)
-            logger.info("ANÁLISE MULTI-INDICADOR + TEMPO REAL")
+            logger.info("ESTRATÉGIA DE REVERSÃO CONTÍNUA")
             
-            # Obter dados históricas
+            # Obter dados históricos
             df = self.get_ohlcv_data(limit=100)
             if df is None or len(df) < 50:
                 logger.error("Dados insuficientes")
@@ -1012,24 +947,86 @@ class TradingBot:
             # Calcular todos os indicadores
             df = self.calculate_all_indicators(df)
             
-            # Usar preço em tempo real se disponível, senão usar do DataFrame
+            # Usar preço em tempo real se disponível
             realtime_price = self.price_manager.get_current_price()
             if realtime_price:
                 current_price = realtime_price
-                logger.info(f"Usando preço TEMPO REAL: ${current_price:.4f}")
+                logger.info(f"Preço TEMPO REAL: ${current_price:.4f}")
             else:
                 current_price = df['close'].iloc[-1]
-                logger.info(f"Usando preço histórico: ${current_price:.4f}")
+                logger.info(f"Preço histórico: ${current_price:.4f}")
                 
             latest = df.iloc[-1]
             
-            # Informações detalhadas
-            logger.info(f"Supertrend: {'BULL' if latest['supertrend_direction'] == 1 else 'BEAR'} (${latest['supertrend']:.2f})")
-            logger.info(f"AlgoAlpha: {latest['algo_alpha']:.3f} ({'BULL' if latest['algo_alpha_signal'] == 1 else 'BEAR'})")
+            # Status dos indicadores
+            supertrend_direction = 'BULL' if latest['supertrend_direction'] == 1 else 'BEAR'
+            algo_alpha_direction = 'BULL' if latest['algo_alpha_signal'] == 1 else 'BEAR'
+            
+            logger.info(f"Supertrend: {supertrend_direction} (${latest['supertrend']:.2f})")
+            logger.info(f"AlgoAlpha: {algo_alpha_direction} ({latest['algo_alpha']:.3f})")
             logger.info(f"MFI: {latest['mfi']:.1f} | ATR: {latest['atr']:.4f}")
             
-            # Taxa de mudança de preço em tempo real
-            if self.price_manager.price_history:
+            # Status da posição atual
+            if self.current_position:
+                pnl_pct = 0
+                if self.entry_price:
+                    pnl_pct = ((current_price - self.entry_price) / self.entry_price) * 100
+                    if self.current_position == 'short':
+                        pnl_pct *= -1
+                
+                position_time = 0
+                if self.position_start_time:
+                    position_time = (time.time() - self.position_start_time) / 60
+                
+                logger.info(f"POSIÇÃO ATUAL: {self.current_position.upper()}")
+                logger.info(f"P&L: {pnl_pct:+.2f}% | Tempo: {position_time:.1f} min")
+            else:
+                logger.info("SEM POSIÇÃO ATIVA")
+            
+            # Verificar se precisa mudar/iniciar posição
+            should_change, target_direction, strength = self.should_enter_position(df)
+            
+            if should_change and target_direction:
+                position_size = self.calculate_position_size()
+                
+                if position_size > 0:
+                    if self.current_position and self.current_position != target_direction:
+                        # Reversão de posição
+                        success = self.reverse_position(target_direction, position_size)
+                        if success:
+                            logger.info("REVERSÃO EXECUTADA COM SUCESSO!")
+                    elif not self.current_position:
+                        # Primeira posição
+                        side = 'buy' if target_direction == 'long' else 'sell'
+                        success = self.open_position(side, position_size)
+                        if success:
+                            logger.info("PRIMEIRA POSIÇÃO ABERTA!")
+                else:
+                    logger.error("SALDO INSUFICIENTE PARA OPERAR")
+            else:
+                # Log do status
+                supertrend_dir = 'LONG' if latest['supertrend_direction'] == 1 else 'SHORT'
+                if self.current_position:
+                    if self.current_position.upper() == supertrend_dir:
+                        logger.info(f"Posição {self.current_position.upper()} alinhada com Supertrend - mantendo")
+                    else:
+                        logger.info(f"Aguardando confirmação para reverter {self.current_position.upper()} -> {supertrend_dir}")
+                        logger.info(f"Força atual: {strength} (mín: {self.min_signal_strength})")
+                else:
+                    logger.info(f"Aguardando confirmação para entrar em {supertrend_dir}")
+                    logger.info(f"Força atual: {strength} (mín: {self.min_signal_strength})")
+            
+            # Estatísticas
+            if self.total_trades > 0:
+                win_rate = (self.successful_trades / self.total_trades) * 100
+                logger.info(f"TRADES: {self.total_trades} | SUCESSOS: {self.successful_trades} | WIN RATE: {win_rate:.1f}%")
+            
+            logger.info("=" * 70)
+                
+        except Exception as e:
+            logger.error(f"Erro na execução da estratégia: {e}")
+            import traceback
+            logger.error(f"Traceback: {traceback.format_exc()}")_manager.price_history:
                 price_change_1min = self.price_manager.get_price_change_rate(60)
                 if abs(price_change_1min) > 0.1:
                     logger.info(f"Mudança 1min: {price_change_1min:+.3f}%")
@@ -1117,28 +1114,28 @@ class TradingBot:
             logger.error(f"Traceback: {traceback.format_exc()}")
     
     def run(self):
-        """Loop principal do bot com preços em tempo real"""
+        """Loop principal do bot com estratégia de reversão contínua"""
         logger.info("=" * 80)
-        logger.info("INICIANDO BOT - ESTRATÉGIA MULTI-INDICADOR + TEMPO REAL")
+        logger.info("INICIANDO BOT - ESTRATÉGIA DE REVERSÃO CONTÍNUA")
         logger.info("=" * 80)
         logger.info(f"Par: {self.symbol}")
         logger.info(f"Timeframe: {self.timeframe}")
         logger.info(f"Alavancagem: {self.leverage}x")
+        logger.info("ESTRATÉGIA:")
+        logger.info("- Supertrend como indicador PRINCIPAL")
+        logger.info("- AlgoAlpha, MFI, ATR como CONFIRMAÇÃO")
+        logger.info("- SEM stop loss ou take profit")
+        logger.info("- Reversão automática quando Supertrend mudar")
+        logger.info("- SEMPRE em posição (long ou short)")
         logger.info("INDICADORES:")
-        logger.info(f"- Supertrend: P{self.supertrend_period}, M{self.supertrend_multiplier} (Principal)")
-        logger.info(f"- AlgoAlpha: Fast{self.algo_alpha_fast}, Slow{self.algo_alpha_slow} (Complemento)")
+        logger.info(f"- Supertrend: P{self.supertrend_period}, M{self.supertrend_multiplier} (DECISOR)")
+        logger.info(f"- AlgoAlpha: Fast{self.algo_alpha_fast}, Slow{self.algo_alpha_slow} (Confirmação)")
         logger.info(f"- ATR: {self.atr_period} períodos (Volatilidade)")
         logger.info(f"- MFI: {self.mfi_period} períodos (Fluxo de dinheiro)")
-        logger.info("CONFIGURAÇÕES APRIMORADAS:")
+        logger.info("CONFIGURAÇÕES:")
         logger.info(f"- Threshold mínimo: {self.min_signal_strength} pontos")
         logger.info(f"- Confiança mínima: {self.min_confidence}%")
         logger.info(f"- Cooldown: {self.signal_cooldown}s")
-        logger.info(f"- Tempo máximo posição: 30 min")
-        logger.info(f"- Alavancagem: {self.leverage}x")
-        logger.info("TEMPO REAL:")
-        logger.info(f"- WebSocket: Preços instantâneos")
-        logger.info(f"- Detecção: Mudanças >= 0.01s")
-        logger.info(f"- Stop/Take dinâmico: -1.5%/+2.0%")
         logger.info("=" * 80)
         
         # Iniciar WebSocket de preços
@@ -1159,21 +1156,9 @@ class TradingBot:
                 try:
                     self.run_strategy()
                     
-                    # Aguardar 90 segundos, mas verificar periodicamente por sinais rápidos
-                    for i in range(18):  # 18 x 5s = 90s
-                        time.sleep(5)
-                        
-                        # Verificar se há movimento forte que precisa de análise
-                        if hasattr(self, 'trigger_fast_analysis') and self.trigger_fast_analysis:
-                            logger.info("Interrompendo aguarda - análise rápida necessária")
-                            break
-                        
-                        # Verificar fechamento forçado
-                        if hasattr(self, 'force_close_next') and self.force_close_next:
-                            logger.warning("Interrompendo aguarda - fechamento forçado necessário")
-                            break
-                    
-                    logger.info("Próxima análise completa iniciando...\n")
+                    # Aguardar 90 segundos para próxima análise
+                    logger.info("Próxima análise em 90 segundos...\n")
+                    time.sleep(90)
                     
                 except KeyboardInterrupt:
                     logger.info("Bot interrompido pelo usuário")
