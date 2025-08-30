@@ -20,14 +20,12 @@ logger = logging.getLogger(__name__)
 
 class TradingBot:
     def __init__(self):
-        """Inicializa o bot de trading com estratégia mais agressiva"""
+        """Inicializa o bot com estratégia multi-indicador precisa"""
         # Configurações da exchange
         self.exchange = self._setup_exchange()
         self.symbol = 'ETHUSDT_UMCBL'
-        self.timeframe = '3m'  # Timeframe menor para mais sinais
+        self.timeframe = '3m'
         self.leverage = 10
-        self.stop_loss_percentage = 0.02  # 2% stop loss
-        self.take_profit_percentage = 0.04  # 4% take profit
         
         # Estado da posição
         self.current_position = None  # 'long', 'short', None
@@ -35,26 +33,36 @@ class TradingBot:
         self.position_size = None
         self.position_start_time = None
         
-        # Parâmetros dos indicadores otimizados para mais trades
-        self.supertrend_period = 10  # Mais sensível
-        self.supertrend_multiplier = 2.0  # Mais sensível
-        self.ema_fast = 8
-        self.ema_slow = 20
-        self.rsi_period = 12
-        self.volume_sma_period = 14
+        # Parâmetros dos indicadores
+        self.supertrend_period = 10
+        self.supertrend_multiplier = 3.0
+        self.atr_period = 13
+        self.mfi_period = 10
+        self.mfi_sma_period = 5
         
-        # Controle de sinais mais permissivo
-        self.min_volume_multiplier = 1.2  # Volume mínimo reduzido
+        # AlgoAlpha parameters (baseado em análise técnica avançada)
+        self.algo_alpha_fast = 8
+        self.algo_alpha_slow = 21
+        self.algo_alpha_signal = 5
+        
+        # Thresholds para precisão
+        self.mfi_oversold = 20
+        self.mfi_overbought = 80
+        self.mfi_neutral = 50
+        
+        # Controle de trades
+        self.total_trades = 0
+        self.successful_trades = 0
         self.last_signal_time = None
-        self.signal_cooldown = 180  # 3 minutos entre sinais (reduzido)
+        self.signal_cooldown = 120  # 2 minutos para precisão
         
-        # Configurações de scalping
-        self.scalping_mode = True
-        self.max_position_time = 1800  # 30 minutos máximo por posição
+        # Estado anterior para detectar mudanças
+        self.last_supertrend_direction = None
+        self.last_algo_alpha_signal = None
         
-        logger.info("Bot de trading inicializado - MODO AGRESSIVO")
-        logger.info(f"Timeframe: {self.timeframe}, Stop Loss: {self.stop_loss_percentage*100}%")
-        logger.info(f"Take Profit: {self.take_profit_percentage*100}%, Scalping: {self.scalping_mode}")
+        logger.info("Bot inicializado - ESTRATÉGIA MULTI-INDICADOR PRECISA")
+        logger.info(f"Indicadores: Supertrend + AlgoAlpha + ATR + MFI")
+        logger.info(f"Timeframe: {self.timeframe} | Cooldown: {self.signal_cooldown}s")
     
     def _setup_exchange(self) -> ccxt.bitget:
         """Configura a conexão com a Bitget"""
@@ -91,7 +99,7 @@ class TradingBot:
             raise
     
     def calculate_supertrend(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Calcula o indicador Supertrend de forma mais robusta"""
+        """Calcula o indicador Supertrend"""
         try:
             # Calcular ATR
             high_low = df['high'] - df['low']
@@ -99,7 +107,7 @@ class TradingBot:
             low_close = np.abs(df['low'] - df['close'].shift())
             ranges = pd.concat([high_low, high_close, low_close], axis=1)
             true_range = ranges.max(axis=1)
-            atr = true_range.rolling(window=self.supertrend_period).mean()
+            atr = true_range.rolling(window=self.supertrend_period, min_periods=1).mean()
             
             # Calcular basic bands
             hl2 = (df['high'] + df['low']) / 2
@@ -159,206 +167,284 @@ class TradingBot:
             return df
         except Exception as e:
             logger.error(f"Erro ao calcular Supertrend: {e}")
-            # Fallback simples
-            df['supertrend'] = df['close'].rolling(window=self.supertrend_period).mean()
-            df['supertrend_direction'] = np.where(df['close'] > df['supertrend'], 1, -1)
             return df
-
-    def calculate_technical_indicators(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Calcula indicadores técnicos otimizados para scalping"""
+    
+    def calculate_atr(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Calcula Average True Range"""
         try:
-            # Supertrend
+            high_low = df['high'] - df['low']
+            high_close = np.abs(df['high'] - df['close'].shift())
+            low_close = np.abs(df['low'] - df['close'].shift())
+            ranges = pd.concat([high_low, high_close, low_close], axis=1)
+            true_range = ranges.max(axis=1)
+            df['atr'] = true_range.rolling(window=self.atr_period, min_periods=1).mean()
+            return df
+        except Exception as e:
+            logger.error(f"Erro ao calcular ATR: {e}")
+            return df
+    
+    def calculate_mfi(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Calcula Money Flow Index"""
+        try:
+            # Typical price = (high + low + close) / 3
+            typical_price = (df['high'] + df['low'] + df['close']) / 3
+            
+            # Raw money flow = typical price * volume
+            raw_money_flow = typical_price * df['volume']
+            
+            # Positive and negative money flow
+            pos_flow = pd.Series(index=df.index, dtype=float)
+            neg_flow = pd.Series(index=df.index, dtype=float)
+            
+            for i in range(1, len(df)):
+                if typical_price.iloc[i] >= typical_price.iloc[i-1]:
+                    pos_flow.iloc[i] = raw_money_flow.iloc[i]
+                    neg_flow.iloc[i] = 0
+                else:
+                    pos_flow.iloc[i] = 0
+                    neg_flow.iloc[i] = raw_money_flow.iloc[i]
+            
+            # Set first values
+            pos_flow.iloc[0] = raw_money_flow.iloc[0]
+            neg_flow.iloc[0] = 0
+            
+            # Calculate sums over the period
+            pos_mf_sum = pos_flow.rolling(window=self.mfi_period, min_periods=1).sum()
+            neg_mf_sum = neg_flow.rolling(window=self.mfi_period, min_periods=1).sum()
+            
+            # Money flow ratio
+            mf_ratio = pos_mf_sum / neg_mf_sum.replace(0, 1)  # Avoid division by zero
+            
+            # Money Flow Index
+            df['mfi'] = 100 - (100 / (1 + mf_ratio))
+            
+            # MFI SMA
+            df['mfi_sma'] = df['mfi'].rolling(window=self.mfi_sma_period, min_periods=1).mean()
+            
+            return df
+        except Exception as e:
+            logger.error(f"Erro ao calcular MFI: {e}")
+            return df
+    
+    def calculate_algo_alpha(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Calcula AlgoAlpha - Indicador proprietário baseado em múltiplas EMAs e momentum"""
+        try:
+            # EMAs de diferentes períodos
+            ema_fast = df['close'].ewm(span=self.algo_alpha_fast, adjust=False).mean()
+            ema_slow = df['close'].ewm(span=self.algo_alpha_slow, adjust=False).mean()
+            
+            # MACD personalizado
+            macd_line = ema_fast - ema_slow
+            signal_line = macd_line.ewm(span=self.algo_alpha_signal, adjust=False).mean()
+            histogram = macd_line - signal_line
+            
+            # Momentum multi-timeframe
+            momentum_3 = df['close'].pct_change(3)
+            momentum_5 = df['close'].pct_change(5)
+            momentum_8 = df['close'].pct_change(8)
+            
+            # Volume-weighted momentum
+            volume_norm = df['volume'] / df['volume'].rolling(window=20, min_periods=1).mean()
+            volume_momentum = momentum_3 * volume_norm
+            
+            # AlgoAlpha Score (combinação ponderada)
+            df['algo_alpha_score'] = (
+                (macd_line / df['close']) * 100 * 0.3 +  # MACD normalizado
+                (histogram / df['close']) * 100 * 0.2 +  # Histogram normalizado
+                momentum_3 * 100 * 0.2 +  # Momentum 3 períodos
+                momentum_5 * 100 * 0.15 +  # Momentum 5 períodos
+                volume_momentum * 100 * 0.15  # Volume momentum
+            )
+            
+            # Suavizar o score
+            df['algo_alpha'] = df['algo_alpha_score'].rolling(window=3, min_periods=1).mean()
+            
+            # Sinal do AlgoAlpha
+            df['algo_alpha_signal'] = np.where(df['algo_alpha'] > 0, 1, -1)
+            
+            return df
+        except Exception as e:
+            logger.error(f"Erro ao calcular AlgoAlpha: {e}")
+            return df
+    
+    def calculate_all_indicators(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Calcula todos os indicadores necessários"""
+        try:
             df = self.calculate_supertrend(df)
-            
-            # EMAs rápidas
-            df['ema_fast'] = df['close'].ewm(span=self.ema_fast).mean()
-            df['ema_slow'] = df['close'].ewm(span=self.ema_slow).mean()
-            
-            # RSI
-            delta = df['close'].diff()
-            gain = (delta.where(delta > 0, 0)).rolling(window=self.rsi_period).mean()
-            loss = (-delta.where(delta < 0, 0)).rolling(window=self.rsi_period).mean()
-            rs = gain / loss
-            df['rsi'] = 100 - (100 / (1 + rs))
-            
-            # Volume
-            df['volume_sma'] = df['volume'].rolling(window=self.volume_sma_period).mean()
-            df['volume_ratio'] = df['volume'] / df['volume_sma']
-            
-            # MACD rápido
-            exp1 = df['close'].ewm(span=8).mean()
-            exp2 = df['close'].ewm(span=17).mean()
-            df['macd'] = exp1 - exp2
-            df['macd_signal'] = df['macd'].ewm(span=6).mean()
-            df['macd_histogram'] = df['macd'] - df['macd_signal']
-            
-            # Bollinger Bands
-            period = 15
-            std = df['close'].rolling(window=period).std()
-            df['bb_middle'] = df['close'].rolling(window=period).mean()
-            df['bb_upper'] = df['bb_middle'] + (std * 1.8)
-            df['bb_lower'] = df['bb_middle'] - (std * 1.8)
-            
-            # Momentum simples
-            df['momentum'] = df['close'] / df['close'].shift(5) - 1
-            
-            # Price change momentum
-            df['price_change'] = df['close'].pct_change()
-            df['price_velocity'] = df['price_change'].rolling(window=3).mean()
-            
+            df = self.calculate_atr(df)
+            df = self.calculate_mfi(df)
+            df = self.calculate_algo_alpha(df)
             return df
         except Exception as e:
             logger.error(f"Erro ao calcular indicadores: {e}")
             return df
     
-    def generate_signals(self, df: pd.DataFrame) -> Dict[str, Any]:
-        """Gera sinais de trading baseado em múltiplos critérios"""
+    def analyze_market_conditions(self, df: pd.DataFrame) -> Dict[str, Any]:
+        """Analisa as condições de mercado usando todos os indicadores"""
         try:
             latest = df.iloc[-1]
-            prev = df.iloc[-2]
+            prev = df.iloc[-2] if len(df) >= 2 else latest
             
-            signals = {
-                'long': 0,
-                'short': 0,
-                'strength': 0,
+            analysis = {
+                'supertrend_bullish': latest['supertrend_direction'] == 1,
+                'supertrend_changed': False,
+                'algo_alpha_bullish': latest['algo_alpha_signal'] == 1,
+                'algo_alpha_changed': False,
+                'mfi_oversold': latest['mfi'] <= self.mfi_oversold,
+                'mfi_overbought': latest['mfi'] >= self.mfi_overbought,
+                'mfi_bullish': latest['mfi'] > latest['mfi_sma'],
+                'atr_high': False,
+                'volatility_level': 'normal',
+                'overall_signal': 'neutral',
+                'signal_strength': 0,
                 'reasons': []
             }
             
-            # 1. Supertrend Cross (peso alto - 3 pontos)
-            if prev['supertrend_direction'] == -1 and latest['supertrend_direction'] == 1:
-                signals['long'] += 3
-                signals['reasons'].append('Supertrend virou BULL')
-            elif prev['supertrend_direction'] == 1 and latest['supertrend_direction'] == -1:
-                signals['short'] += 3
-                signals['reasons'].append('Supertrend virou BEAR')
+            # Detectar mudanças no Supertrend
+            if self.last_supertrend_direction is not None:
+                if latest['supertrend_direction'] != self.last_supertrend_direction:
+                    analysis['supertrend_changed'] = True
             
-            # 2. Price vs Supertrend (peso médio - 2 pontos)
-            if latest['close'] > latest['supertrend'] and latest['supertrend_direction'] == 1:
-                signals['long'] += 2
-                signals['reasons'].append('Preço acima do Supertrend')
-            elif latest['close'] < latest['supertrend'] and latest['supertrend_direction'] == -1:
-                signals['short'] += 2
-                signals['reasons'].append('Preço abaixo do Supertrend')
+            # Detectar mudanças no AlgoAlpha
+            if self.last_algo_alpha_signal is not None:
+                if latest['algo_alpha_signal'] != self.last_algo_alpha_signal:
+                    analysis['algo_alpha_changed'] = True
             
-            # 3. EMA Cross (peso médio - 2 pontos)
-            if prev['ema_fast'] <= prev['ema_slow'] and latest['ema_fast'] > latest['ema_slow']:
-                signals['long'] += 2
-                signals['reasons'].append('EMA bullish cross')
-            elif prev['ema_fast'] >= prev['ema_slow'] and latest['ema_fast'] < latest['ema_slow']:
-                signals['short'] += 2
-                signals['reasons'].append('EMA bearish cross')
+            # Analisar volatilidade com ATR
+            atr_sma = df['atr'].rolling(window=20, min_periods=1).mean().iloc[-1]
+            atr_current = latest['atr']
+            if atr_current > atr_sma * 1.5:
+                analysis['atr_high'] = True
+                analysis['volatility_level'] = 'high'
+            elif atr_current < atr_sma * 0.7:
+                analysis['volatility_level'] = 'low'
             
-            # 4. EMA Alignment (peso baixo - 1 ponto)
-            if latest['ema_fast'] > latest['ema_slow'] and latest['close'] > latest['ema_fast']:
-                signals['long'] += 1
-                signals['reasons'].append('EMAs alinhadas BULL')
-            elif latest['ema_fast'] < latest['ema_slow'] and latest['close'] < latest['ema_fast']:
-                signals['short'] += 1
-                signals['reasons'].append('EMAs alinhadas BEAR')
-            
-            # 5. RSI Extremes Recovery (peso médio - 2 pontos)
-            if latest['rsi'] < 30 and prev['rsi'] >= 30:  # Entrando em oversold
-                signals['long'] += 1
-                signals['reasons'].append('RSI oversold')
-            elif latest['rsi'] > 30 and prev['rsi'] <= 30:  # Saindo de oversold
-                signals['long'] += 2
-                signals['reasons'].append('RSI saindo de oversold')
-            elif latest['rsi'] > 70 and prev['rsi'] <= 70:  # Entrando em overbought
-                signals['short'] += 1
-                signals['reasons'].append('RSI overbought')
-            elif latest['rsi'] < 70 and prev['rsi'] >= 70:  # Saindo de overbought
-                signals['short'] += 2
-                signals['reasons'].append('RSI saindo de overbought')
-            
-            # 6. MACD Momentum (peso baixo - 1 ponto)
-            if latest['macd'] > latest['macd_signal'] and prev['macd'] <= prev['macd_signal']:
-                signals['long'] += 1
-                signals['reasons'].append('MACD cross bullish')
-            elif latest['macd'] < latest['macd_signal'] and prev['macd'] >= prev['macd_signal']:
-                signals['short'] += 1
-                signals['reasons'].append('MACD cross bearish')
-            
-            # 7. MACD Histogram (peso baixo - 1 ponto)
-            if latest['macd_histogram'] > 0 and prev['macd_histogram'] <= 0:
-                signals['long'] += 1
-                signals['reasons'].append('MACD histogram +')
-            elif latest['macd_histogram'] < 0 and prev['macd_histogram'] >= 0:
-                signals['short'] += 1
-                signals['reasons'].append('MACD histogram -')
-            
-            # 8. Bollinger Bands Breakout (peso alto - 3 pontos)
-            if latest['close'] > latest['bb_upper'] and latest['volume_ratio'] > 1.3:
-                signals['long'] += 3
-                signals['reasons'].append('BB breakout UP com volume')
-            elif latest['close'] < latest['bb_lower'] and latest['volume_ratio'] > 1.3:
-                signals['short'] += 3
-                signals['reasons'].append('BB breakout DOWN com volume')
-            
-            # 9. Momentum Simples (peso baixo - 1 ponto)
-            if latest['momentum'] > 0.003:  # 0.3% momentum positivo
-                signals['long'] += 1
-                signals['reasons'].append('Momentum positivo')
-            elif latest['momentum'] < -0.003:  # 0.3% momentum negativo
-                signals['short'] += 1
-                signals['reasons'].append('Momentum negativo')
-            
-            # 10. Price Velocity (peso baixo - 1 ponto)
-            if latest['price_velocity'] > 0.001:  # Aceleração positiva
-                signals['long'] += 1
-                signals['reasons'].append('Aceleração de preço +')
-            elif latest['price_velocity'] < -0.001:  # Aceleração negativa
-                signals['short'] += 1
-                signals['reasons'].append('Aceleração de preço -')
-            
-            # 11. Volume Confirmation (bonus - 1 ponto se já há outros sinais)
-            if latest['volume_ratio'] > self.min_volume_multiplier:
-                if signals['long'] > 0:
-                    signals['long'] += 1
-                    signals['reasons'].append('Volume confirmando LONG')
-                elif signals['short'] > 0:
-                    signals['short'] += 1
-                    signals['reasons'].append('Volume confirmando SHORT')
-            
-            # Calcular força geral do sinal
-            signals['strength'] = max(signals['long'], signals['short'])
-            
-            return signals
+            return analysis
             
         except Exception as e:
-            logger.error(f"Erro ao gerar sinais: {e}")
-            return {'long': 0, 'short': 0, 'strength': 0, 'reasons': []}
+            logger.error(f"Erro na análise de mercado: {e}")
+            return {'overall_signal': 'neutral', 'signal_strength': 0, 'reasons': []}
+    
+    def generate_trading_signal(self, df: pd.DataFrame) -> Dict[str, Any]:
+        """Gera sinal de trading baseado na análise multi-indicador"""
+        try:
+            analysis = self.analyze_market_conditions(df)
+            latest = df.iloc[-1]
+            
+            signal = {
+                'action': 'hold',
+                'direction': None,
+                'strength': 0,
+                'reasons': [],
+                'confidence': 0
+            }
+            
+            long_score = 0
+            short_score = 0
+            reasons = []
+            
+            # 1. Supertrend (peso alto - 40%)
+            if analysis['supertrend_bullish']:
+                long_score += 4
+                reasons.append("Supertrend BULLISH")
+            else:
+                short_score += 4
+                reasons.append("Supertrend BEARISH")
+            
+            # Bonus para mudança de direção do Supertrend
+            if analysis['supertrend_changed']:
+                if analysis['supertrend_bullish']:
+                    long_score += 3
+                    reasons.append("Supertrend virou BULL")
+                else:
+                    short_score += 3
+                    reasons.append("Supertrend virou BEAR")
+            
+            # 2. AlgoAlpha (peso médio-alto - 30%)
+            if analysis['algo_alpha_bullish']:
+                long_score += 3
+                reasons.append("AlgoAlpha BULLISH")
+            else:
+                short_score += 3
+                reasons.append("AlgoAlpha BEARISH")
+            
+            # Bonus para mudança do AlgoAlpha
+            if analysis['algo_alpha_changed']:
+                if analysis['algo_alpha_bullish']:
+                    long_score += 2
+                    reasons.append("AlgoAlpha virou BULL")
+                else:
+                    short_score += 2
+                    reasons.append("AlgoAlpha virou BEAR")
+            
+            # 3. MFI (peso médio - 20%)
+            if analysis['mfi_oversold'] and analysis['mfi_bullish']:
+                long_score += 2
+                reasons.append("MFI saindo de oversold")
+            elif analysis['mfi_overbought'] and not analysis['mfi_bullish']:
+                short_score += 2
+                reasons.append("MFI saindo de overbought")
+            elif analysis['mfi_bullish']:
+                long_score += 1
+                reasons.append("MFI bullish")
+            else:
+                short_score += 1
+                reasons.append("MFI bearish")
+            
+            # 4. ATR/Volatilidade (peso baixo - 10%)
+            if analysis['volatility_level'] == 'high':
+                # Alta volatilidade - reduzir confiança
+                long_score = max(0, long_score - 1)
+                short_score = max(0, short_score - 1)
+                reasons.append("Volatilidade alta - cautela")
+            elif analysis['volatility_level'] == 'low':
+                # Baixa volatilidade - pode ser breakout
+                if long_score > short_score:
+                    long_score += 1
+                else:
+                    short_score += 1
+                reasons.append("Volatilidade baixa - possível breakout")
+            
+            # Determinar sinal final
+            signal['reasons'] = reasons
+            total_score = max(long_score, short_score)
+            signal['strength'] = total_score
+            
+            if long_score > short_score and long_score >= 5:  # Threshold para LONG
+                signal['action'] = 'buy'
+                signal['direction'] = 'long'
+                signal['confidence'] = min(100, (long_score / 10) * 100)
+            elif short_score > long_score and short_score >= 5:  # Threshold para SHORT
+                signal['action'] = 'sell'
+                signal['direction'] = 'short'
+                signal['confidence'] = min(100, (short_score / 10) * 100)
+            
+            return signal
+            
+        except Exception as e:
+            logger.error(f"Erro ao gerar sinal: {e}")
+            return {'action': 'hold', 'direction': None, 'strength': 0, 'reasons': []}
     
     def should_enter_position(self, df: pd.DataFrame) -> Tuple[bool, str, int]:
-        """Decide se deve entrar em posição com critérios flexíveis"""
+        """Decide se deve entrar em posição"""
         try:
             # Verificar cooldown
             current_time = time.time()
             if self.last_signal_time and (current_time - self.last_signal_time) < self.signal_cooldown:
                 return False, None, 0
             
-            # Gerar sinais
-            signals = self.generate_signals(df)
+            # Gerar sinal
+            signal = self.generate_trading_signal(df)
             
-            # Critérios mais flexíveis - só precisa de 3 pontos
-            min_strength = 3
-            
-            if signals['long'] >= min_strength and signals['long'] > signals['short']:
-                logger.info(f"SINAL LONG DETECTADO - Força: {signals['long']}")
-                logger.info(f"Razões: {', '.join(signals['reasons'])}")
+            if signal['action'] in ['buy', 'sell'] and signal['confidence'] >= 60:
+                logger.info(f"SINAL {signal['direction'].upper()} - Força: {signal['strength']}")
+                logger.info(f"Confiança: {signal['confidence']:.1f}%")
+                logger.info(f"Razões: {', '.join(signal['reasons'][:5])}")
+                
                 self.last_signal_time = current_time
-                return True, 'long', signals['long']
+                return True, signal['direction'], signal['strength']
             
-            elif signals['short'] >= min_strength and signals['short'] > signals['long']:
-                logger.info(f"SINAL SHORT DETECTADO - Força: {signals['short']}")
-                logger.info(f"Razões: {', '.join(signals['reasons'])}")
-                self.last_signal_time = current_time
-                return True, 'short', signals['short']
-            
-            # Log de sinais fracos para debugging
-            if signals['strength'] > 0:
-                logger.info(f"Sinal fraco - L:{signals['long']} S:{signals['short']} - {', '.join(signals['reasons'][:3])}")
-            
-            return False, None, max(signals['long'], signals['short'])
+            return False, None, signal['strength']
             
         except Exception as e:
             logger.error(f"Erro na análise de entrada: {e}")
@@ -370,38 +456,33 @@ class TradingBot:
             if not self.current_position or not self.entry_price:
                 return False
             
-            latest = df.iloc[-1]
+            # Gerar análise atual
+            analysis = self.analyze_market_conditions(df)
             
-            # 1. Take Profit
-            if self.current_position == 'long':
-                profit_pct = (current_price - self.entry_price) / self.entry_price
-                if profit_pct >= self.take_profit_percentage:
-                    logger.info(f"TAKE PROFIT LONG atingido: {profit_pct*100:.2f}%")
+            # 1. Supertrend mudou de direção (principal critério)
+            if analysis['supertrend_changed']:
+                if self.current_position == 'long' and not analysis['supertrend_bullish']:
+                    logger.info("Fechando LONG - Supertrend virou BEARISH")
                     return True
-                    
-                # Reversão de sinais
-                signals = self.generate_signals(df)
-                if signals['short'] >= 4:  # Sinal forte contrário
-                    logger.info("Fechando LONG - sinal SHORT forte detectado")
-                    return True
-                    
-            elif self.current_position == 'short':
-                profit_pct = (self.entry_price - current_price) / self.entry_price
-                if profit_pct >= self.take_profit_percentage:
-                    logger.info(f"TAKE PROFIT SHORT atingido: {profit_pct*100:.2f}%")
-                    return True
-                    
-                # Reversão de sinais
-                signals = self.generate_signals(df)
-                if signals['long'] >= 4:  # Sinal forte contrário
-                    logger.info("Fechando SHORT - sinal LONG forte detectado")
+                elif self.current_position == 'short' and analysis['supertrend_bullish']:
+                    logger.info("Fechando SHORT - Supertrend virou BULLISH")
                     return True
             
-            # 2. Tempo máximo de posição (scalping)
+            # 2. AlgoAlpha forte contrário
+            signal = self.generate_trading_signal(df)
+            if signal['confidence'] >= 80:
+                if self.current_position == 'long' and signal['direction'] == 'short':
+                    logger.info("Fechando LONG - AlgoAlpha forte BEARISH")
+                    return True
+                elif self.current_position == 'short' and signal['direction'] == 'long':
+                    logger.info("Fechando SHORT - AlgoAlpha forte BULLISH")
+                    return True
+            
+            # 3. Tempo máximo (30 minutos)
             if self.position_start_time:
                 position_duration = time.time() - self.position_start_time
-                if position_duration > self.max_position_time:
-                    logger.info(f"Fechando posição por tempo limite: {position_duration/60:.1f} min")
+                if position_duration > 1800:  # 30 minutos
+                    logger.info(f"Fechando por tempo limite: {position_duration/60:.1f} min")
                     return True
             
             return False
@@ -434,10 +515,7 @@ class TradingBot:
             position_info = self.get_position_info()
             if not position_info:
                 logger.info("Nenhuma posição para fechar")
-                self.current_position = None
-                self.entry_price = None
-                self.position_size = None
-                self.position_start_time = None
+                self._reset_position_state()
                 return True
             
             side = 'buy' if position_info['side'] == 'short' else 'sell'
@@ -449,15 +527,14 @@ class TradingBot:
                 params={'reduceOnly': True}
             )
             
-            logger.info(f"Posição {self.current_position} fechada: {order['id']}")
-            logger.info(f"P&L realizado: {position_info['percentage']:.2f}%")
+            # Estatísticas
+            if position_info['percentage'] > 0:
+                self.successful_trades += 1
             
-            # Reset estado
-            self.current_position = None
-            self.entry_price = None
-            self.position_size = None
-            self.position_start_time = None
+            logger.info(f"POSIÇÃO {self.current_position.upper()} FECHADA")
+            logger.info(f"P&L: {position_info['percentage']:.2f}%")
             
+            self._reset_position_state()
             return True
             
         except Exception as e:
@@ -468,7 +545,7 @@ class TradingBot:
         """Abre uma nova posição"""
         try:
             if amount <= 0:
-                logger.error("Quantidade da posição deve ser maior que zero")
+                logger.error("Quantidade inválida")
                 return False
             
             # Configurar alavancagem
@@ -485,7 +562,7 @@ class TradingBot:
             )
             
             # Aguardar processamento
-            time.sleep(2)
+            time.sleep(3)
             
             # Verificar execução
             if order.get('status') == 'closed' or order.get('filled', 0) > 0:
@@ -494,9 +571,10 @@ class TradingBot:
                 self.entry_price = float(order.get('price') or order.get('average') or 0)
                 self.position_size = float(order.get('filled', amount))
                 self.position_start_time = time.time()
+                self.total_trades += 1
                 
-                logger.info(f"POSIÇÃO {self.current_position.upper()} ABERTA!")
-                logger.info(f"Preço: ${self.entry_price:.4f}")
+                logger.info(f"POSIÇÃO {self.current_position.upper()} ABERTA")
+                logger.info(f"Preço entrada: ${self.entry_price:.4f}")
                 logger.info(f"Tamanho: {self.position_size} ETH")
                 
                 return True
@@ -508,39 +586,18 @@ class TradingBot:
             logger.error(f"Erro ao abrir posição {side}: {e}")
             return False
     
-    def check_stop_loss(self, current_price: float) -> bool:
-        """Verifica stop loss"""
-        if not self.current_position or not self.entry_price:
-            return False
-        
-        if self.current_position == 'long':
-            stop_price = self.entry_price * (1 - self.stop_loss_percentage)
-            if current_price <= stop_price:
-                loss_pct = (current_price - self.entry_price) / self.entry_price * 100
-                logger.warning(f"STOP LOSS LONG ACIONADO! Perda: {loss_pct:.2f}%")
-                return True
-                
-        elif self.current_position == 'short':
-            stop_price = self.entry_price * (1 + self.stop_loss_percentage)
-            if current_price >= stop_price:
-                loss_pct = (self.entry_price - current_price) / self.entry_price * 100
-                logger.warning(f"STOP LOSS SHORT ACIONADO! Perda: {loss_pct:.2f}%")
-                return True
-        
-        return False
-    
     def calculate_position_size(self) -> float:
-        """Calcula tamanho da posição de forma mais agressiva"""
+        """Calcula tamanho da posição"""
         try:
             balance = self.exchange.fetch_balance()
             usdt_balance = float(balance.get('USDT', {}).get('free', 0))
             
-            if usdt_balance <= 10:  # Mínimo de $10
-                logger.error(f"Saldo USDT insuficiente: ${usdt_balance:.2f}")
+            if usdt_balance <= 10:
+                logger.error(f"Saldo insuficiente: ${usdt_balance:.2f}")
                 return 0
             
-            # Usar 85% do saldo para scalping agressivo
-            position_value = usdt_balance * 0.85
+            # Usar 65% do saldo para trades precisos
+            position_value = usdt_balance * 0.65
             
             # Obter preço atual
             ticker = self.exchange.fetch_ticker(self.symbol)
@@ -564,57 +621,57 @@ class TradingBot:
             precision = market.get('precision', {}).get('amount', 4)
             position_size = round(position_size, precision)
             
-            logger.info(f"Saldo disponível: ${usdt_balance:.2f}")
-            logger.info(f"Valor da posição: ${position_value:.2f}")
-            logger.info(f"Preço ETH: ${current_price:.4f}")
-            logger.info(f"Tamanho calculado: {position_size} ETH")
+            logger.info(f"Saldo: ${usdt_balance:.2f} | Posição: ${position_value:.2f}")
+            logger.info(f"Preço ETH: ${current_price:.4f} | Tamanho: {position_size} ETH")
             
             return position_size
             
         except Exception as e:
-            logger.error(f"Erro ao calcular tamanho da posição: {e}")
+            logger.error(f"Erro ao calcular posição: {e}")
             return 0.001
     
+    def _reset_position_state(self):
+        """Reseta o estado da posição"""
+        self.current_position = None
+        self.entry_price = None
+        self.position_size = None
+        self.position_start_time = None
+    
     def run_strategy(self):
-        """Executa uma iteração da estratégia otimizada"""
+        """Executa uma iteração da estratégia"""
         try:
-            logger.info("=== ANALISANDO MERCADO ===")
+            logger.info("=" * 70)
+            logger.info("ANÁLISE MULTI-INDICADOR PRECISA")
             
             # Obter dados
             df = self.get_ohlcv_data(limit=100)
-            if df is None or len(df) < 30:
+            if df is None or len(df) < 50:
                 logger.error("Dados insuficientes")
                 return
             
-            # Calcular indicadores
-            df = self.calculate_technical_indicators(df)
+            # Calcular todos os indicadores
+            df = self.calculate_all_indicators(df)
             
-            # Preço atual e informações
+            # Informações atuais
             current_price = df['close'].iloc[-1]
             latest = df.iloc[-1]
             
             logger.info(f"Preço ETH: ${current_price:.4f}")
-            logger.info(f"Supertrend: {'BULL' if latest['supertrend_direction'] == 1 else 'BEAR'} (${latest['supertrend']:.4f})")
-            logger.info(f"RSI: {latest['rsi']:.1f}")
-            logger.info(f"Volume: {latest['volume_ratio']:.2f}x da média")
+            logger.info(f"Supertrend: {'BULL' if latest['supertrend_direction'] == 1 else 'BEAR'} (${latest['supertrend']:.2f})")
+            logger.info(f"AlgoAlpha: {latest['algo_alpha']:.3f} ({'BULL' if latest['algo_alpha_signal'] == 1 else 'BEAR'})")
+            logger.info(f"MFI: {latest['mfi']:.1f} | ATR: {latest['atr']:.4f}")
             
-            # 1. Verificar stop loss primeiro
-            if self.check_stop_loss(current_price):
-                self.close_position()
-                return
-            
-            # 2. Verificar fechamento de posição existente
+            # 1. Verificar fechamento de posição existente
             if self.current_position and self.should_close_position(df, current_price):
                 self.close_position()
                 return
             
-            # 3. Procurar entrada em nova posição
+            # 2. Procurar entrada em nova posição
             if not self.current_position:
                 should_enter, direction, strength = self.should_enter_position(df)
                 
                 if should_enter and direction:
-                    logger.info(f"=== ENTRADA {direction.upper()} DETECTADA ===")
-                    logger.info(f"Força do sinal: {strength}")
+                    logger.info(f"ENTRADA {direction.upper()} DETECTADA - Força: {strength}")
                     
                     position_size = self.calculate_position_size()
                     if position_size > 0:
@@ -626,14 +683,14 @@ class TradingBot:
                         else:
                             logger.error("FALHA AO ABRIR POSIÇÃO")
                     else:
-                        logger.error("SALDO INSUFICIENTE PARA TRADING")
+                        logger.error("SALDO INSUFICIENTE")
                 else:
-                    if strength > 0:
-                        logger.info(f"Sinal fraco detectado (força: {strength}) - aguardando sinal mais forte")
+                    if strength >= 3:
+                        logger.info(f"Sinal detectado (força: {strength}) mas abaixo do threshold")
                     else:
-                        logger.info("Mercado neutro - sem sinais claros")
+                        logger.info("Aguardando sinais mais fortes")
             
-            # 4. Status da posição atual
+            # 3. Status da posição atual
             if self.current_position:
                 pnl_pct = 0
                 position_time = 0
@@ -648,17 +705,17 @@ class TradingBot:
                 
                 logger.info(f"POSIÇÃO ATIVA: {self.current_position.upper()}")
                 logger.info(f"P&L: {pnl_pct:+.2f}% | Tempo: {position_time:.1f} min")
-                
-                # Avisos de gerenciamento de risco
-                if position_time > 25:  # Próximo do limite de 30 min
-                    logger.warning("ATENÇÃO: Posição próxima do tempo limite!")
-                
-                if self.current_position == 'long' and pnl_pct >= 3:
-                    logger.info("PRÓXIMO DO TAKE PROFIT - Monitorando...")
-                elif self.current_position == 'short' and pnl_pct >= 3:
-                    logger.info("PRÓXIMO DO TAKE PROFIT - Monitorando...")
             
-            logger.info("=" * 40)
+            # 4. Atualizar estados anteriores para próxima iteração
+            self.last_supertrend_direction = latest['supertrend_direction']
+            self.last_algo_alpha_signal = latest['algo_alpha_signal']
+            
+            # 5. Estatísticas
+            if self.total_trades > 0:
+                win_rate = (self.successful_trades / self.total_trades) * 100
+                logger.info(f"Trades: {self.total_trades} | Win Rate: {win_rate:.1f}%")
+            
+            logger.info("=" * 70)
                 
         except Exception as e:
             logger.error(f"Erro na execução da estratégia: {e}")
@@ -666,25 +723,31 @@ class TradingBot:
             logger.error(f"Traceback: {traceback.format_exc()}")
     
     def run(self):
-        """Loop principal do bot otimizado para máxima eficiência"""
-        logger.info("=" * 60)
-        logger.info("INICIANDO BOT DE TRADING - MODO AGRESSIVO")
-        logger.info("=" * 60)
+        """Loop principal do bot"""
+        logger.info("=" * 80)
+        logger.info("INICIANDO BOT - ESTRATÉGIA MULTI-INDICADOR PRECISA")
+        logger.info("=" * 80)
         logger.info(f"Par: {self.symbol}")
         logger.info(f"Timeframe: {self.timeframe}")
         logger.info(f"Alavancagem: {self.leverage}x")
-        logger.info(f"Stop Loss: {self.stop_loss_percentage*100}%")
-        logger.info(f"Take Profit: {self.take_profit_percentage*100}%")
-        logger.info(f"Tempo máximo por posição: {self.max_position_time/60:.1f} min")
-        logger.info(f"Cooldown entre sinais: {self.signal_cooldown/60:.1f} min")
-        logger.info("=" * 60)
+        logger.info("INDICADORES:")
+        logger.info(f"- Supertrend: P{self.supertrend_period}, M{self.supertrend_multiplier} (Principal)")
+        logger.info(f"- AlgoAlpha: Fast{self.algo_alpha_fast}, Slow{self.algo_alpha_slow} (Complemento)")
+        logger.info(f"- ATR: {self.atr_period} períodos (Volatilidade)")
+        logger.info(f"- MFI: {self.mfi_period} períodos (Fluxo de dinheiro)")
+        logger.info("CONFIGURAÇÕES:")
+        logger.info(f"- Threshold mínimo: 5 pontos")
+        logger.info(f"- Confiança mínima: 60%")
+        logger.info(f"- Cooldown: {self.signal_cooldown}s")
+        logger.info(f"- Tempo máximo posição: 30 min")
+        logger.info("=" * 80)
         
         while True:
             try:
                 self.run_strategy()
                 
-                # Aguardar 90 segundos entre verificações
-                logger.info(f"Próxima análise em 90 segundos...\n")
+                # Aguardar 90 segundos
+                logger.info("Próxima análise em 90 segundos...\n")
                 time.sleep(90)
                 
             except KeyboardInterrupt:
@@ -693,8 +756,8 @@ class TradingBot:
                     logger.warning("ATENÇÃO: Posição ativa! Considere fechar manualmente.")
                 break
             except Exception as e:
-                logger.error(f"Erro crítico no loop principal: {e}")
-                logger.info("Tentando recuperar em 30 segundos...")
+                logger.error(f"Erro crítico: {e}")
+                logger.info("Recuperando em 30 segundos...")
                 time.sleep(30)
 
 def main():
@@ -703,7 +766,7 @@ def main():
         bot = TradingBot()
         bot.run()
     except Exception as e:
-        logger.error(f"Erro fatal ao inicializar bot: {e}")
+        logger.error(f"Erro fatal: {e}")
         raise
 
 if __name__ == "__main__":
