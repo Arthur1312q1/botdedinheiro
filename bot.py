@@ -1,10 +1,100 @@
-import ccxt
+def run(self):
+        """Loop principal do bot com preços em tempo real"""
+        logger.info("=" * 80)
+        logger.info("INICIANDO BOT - ESTRATÉGIA MULTI-INDICADOR + TEMPO REAL")
+        logger.info("=" * 80)
+        logger.info(f"Par: {self.symbol}")
+        logger.info(f"Timeframe: {self.timeframe}")
+        logger.info(f"Alavancagem: {self.leverage}x")
+        logger.info("INDICADORES:")
+        logger.info(f"- Supertrend: P{self.supertrend_period}, M{self.supertrend_multiplier} (Principal)")
+        logger.info(f"- AlgoAlpha: Fast{self.algo_alpha_fast}, Slow{self.algo_alpha_slow} (Complemento)")
+        logger.info(f"- ATR: {self.atr_period} períodos (Volatilidade)")
+        logger.info(f"- MFI: {self.mfi_period} períodos (Fluxo de dinheiro)")
+        logger.info("CONFIGURAÇÕES APRIMORADAS:")
+        logger.info(f"- Threshold mínimo: {self.min_signal_strength} pontos")
+        logger.info(f"- Confiança mínima: {self.min_confidence}%")
+        logger.info(f"- Cooldown: {self.signal_cooldown}s")
+        logger.info(f"- Tempo máximo posição: 30 min")
+        logger.info(f"- Alavancagem: {self.leverage}x")
+        logger.info("TEMPO REAL:")
+        logger.info(f"- WebSocket: Preços instantâneos")
+        logger.info(f"- Detecção: Mudanças >= 0.01s")
+        logger.info(f"- Stop/Take dinâmico: -1.5%/+2.0%")
+        logger.info("=" * 80)
+        
+        # Iniciar WebSocket de preços
+        logger.info("Iniciando WebSocket para preços em tempo real...")
+        self.price_manager.start()
+        
+        # Aguardar conexão inicial
+        time.sleep(5)
+        
+        # Verificar se WebSocket conectou
+        if self.price_manager.get_current_price():
+            logger.info(f"WebSocket conectado! Preço inicial: ${self.price_manager.get_current_price():.4f}")
+        else:
+            logger.warning("WebSocket não conectou, usando preços da API REST")
+        
+        try:
+            while True:
+                try:
+                    self.run_strategy()
+                    
+                    # Aguardar 90 segundos, mas verificar periodicamente por sinais rápidos
+                    for i in range(18):  # 18 x 5s = 90s
+                        time.sleep(5)
+                        
+                        # Verificar se há movimento forte que precisa de análise
+                        if hasattr(self, 'trigger_fast_analysis') and self.trigger_fast_analysis:
+                            logger.info("Interrompendo aguarda - análise rápida necessária")
+                            break
+                        
+                        # Verificar fechamento forçado
+                        if hasattr(self, 'force_close_next') and self.force_close_next:
+                            logger.warning("Interrompendo aguarda - fechamento forçado necessário")
+                            break
+                    
+                    logger.info("Próxima análise completa iniciando...\n")
+                    
+                except KeyboardInterrupt:
+                    logger.info("Bot interrompido pelo usuário")
+                    break
+                except Exception as e:
+                    logger.error(f"Erro crítico: {e}")
+                    logger.info("Recuperando em 30 segundos...")
+                    time.sleep(30)
+                    
+        finally:
+        finally:
+            # Parar WebSocket ao finalizar
+            logger.info("Parando WebSocket...")
+            self.price_manager.stop()
+            
+            if self.current_position:
+                logger.warning("ATENÇÃO: Posição ativa! Considere fechar manualmente.")
+
+def main():
+    """Função principal"""
+    try:
+        bot = TradingBot()
+        bot.run()
+    except Exception as e:
+        logger.error(f"Erro fatal: {e}")
+        raise
+
+if __name__ == "__main__":
+    main()import ccxt
 import pandas as pd
 import pandas_ta as ta
 import numpy as np
 import time
 import logging
 import os
+import asyncio
+import websocket
+import json
+import threading
 from datetime import datetime
 from typing import Tuple, Optional, Dict, Any
 
@@ -18,7 +108,137 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-class TradingBot:
+class RealTimePriceManager:
+    """Gerenciador de preços em tempo real via WebSocket"""
+    
+    def __init__(self, symbol: str = 'ETHUSDT'):
+        self.symbol = symbol
+        self.current_price = None
+        self.price_history = []
+        self.last_update = None
+        self.ws = None
+        self.ws_thread = None
+        self.running = False
+        self.price_callbacks = []
+        
+        # Configurações Bitget WebSocket
+        self.ws_url = "wss://ws.bitget.com/spot/v1/stream"
+        
+    def add_price_callback(self, callback):
+        """Adiciona callback para ser chamado quando preço mudar"""
+        self.price_callbacks.append(callback)
+        
+    def on_message(self, ws, message):
+        """Processa mensagens do WebSocket"""
+        try:
+            data = json.loads(message)
+            
+            if 'data' in data and isinstance(data['data'], list):
+                for item in data['data']:
+                    if 'c' in item:  # 'c' é o preço atual (close)
+                        new_price = float(item['c'])
+                        old_price = self.current_price
+                        
+                        self.current_price = new_price
+                        self.last_update = time.time()
+                        
+                        # Manter histórico dos últimos 100 preços
+                        self.price_history.append({
+                            'price': new_price,
+                            'timestamp': time.time()
+                        })
+                        if len(self.price_history) > 100:
+                            self.price_history.pop(0)
+                        
+                        # Chamar callbacks apenas se preço mudou
+                        if old_price and abs(new_price - old_price) >= 0.01:
+                            logger.debug(f"Preço mudou: ${old_price:.4f} -> ${new_price:.4f}")
+                            for callback in self.price_callbacks:
+                                try:
+                                    callback(new_price, old_price)
+                                except Exception as e:
+                                    logger.error(f"Erro no callback de preço: {e}")
+                        
+        except Exception as e:
+            logger.error(f"Erro ao processar mensagem WebSocket: {e}")
+            
+    def on_error(self, ws, error):
+        """Trata erros do WebSocket"""
+        logger.error(f"Erro WebSocket: {error}")
+        
+    def on_close(self, ws, close_status_code, close_msg):
+        """WebSocket fechado"""
+        logger.warning("WebSocket fechado, tentando reconectar...")
+        if self.running:
+            time.sleep(2)
+            self.connect()
+            
+    def on_open(self, ws):
+        """WebSocket conectado"""
+        logger.info("WebSocket conectado - iniciando subscrição de preços")
+        
+        # Subscrever ao ticker do ETH/USDT
+        subscribe_msg = {
+            "op": "subscribe",
+            "args": [{
+                "channel": "ticker",
+                "instId": "ETHUSDT"
+            }]
+        }
+        
+        ws.send(json.dumps(subscribe_msg))
+        logger.info("Subscrito aos tickers ETHUSDT")
+        
+    def connect(self):
+        """Conecta ao WebSocket"""
+        try:
+            self.ws = websocket.WebSocketApp(
+                self.ws_url,
+                on_message=self.on_message,
+                on_error=self.on_error,
+                on_close=self.on_close,
+                on_open=self.on_open
+            )
+            
+            self.running = True
+            self.ws.run_forever()
+            
+        except Exception as e:
+            logger.error(f"Erro ao conectar WebSocket: {e}")
+            
+    def start(self):
+        """Inicia o WebSocket em thread separada"""
+        if not self.ws_thread or not self.ws_thread.is_alive():
+            self.ws_thread = threading.Thread(target=self.connect, daemon=True)
+            self.ws_thread.start()
+            logger.info("WebSocket de preços iniciado em thread separada")
+            
+    def stop(self):
+        """Para o WebSocket"""
+        self.running = False
+        if self.ws:
+            self.ws.close()
+        logger.info("WebSocket de preços parado")
+        
+    def get_current_price(self) -> Optional[float]:
+        """Obtém o preço atual"""
+        return self.current_price
+        
+    def get_price_change_rate(self, seconds: int = 60) -> float:
+        """Calcula taxa de mudança de preço por período"""
+        if len(self.price_history) < 2:
+            return 0.0
+            
+        now = time.time()
+        recent_prices = [p for p in self.price_history if now - p['timestamp'] <= seconds]
+        
+        if len(recent_prices) < 2:
+            return 0.0
+            
+        oldest_price = recent_prices[0]['price']
+        newest_price = recent_prices[-1]['price']
+        
+        return ((newest_price - oldest_price) / oldest_price) * 100
     def __init__(self):
         """Inicializa o bot com estratégia multi-indicador precisa"""
         # Configurações da exchange
@@ -858,12 +1078,73 @@ class TradingBot:
             logger.info(f"AlgoAlpha: {latest['algo_alpha']:.3f} ({'BULL' if latest['algo_alpha_signal'] == 1 else 'BEAR'})")
             logger.info(f"MFI: {latest['mfi']:.1f} | ATR: {latest['atr']:.4f}")
             
-            # 1. Verificar fechamento de posição existente
+    def run_strategy(self):
+        """Executa uma iteração da estratégia com preços em tempo real"""
+        try:
+            # Verificar se há ordem de fechamento instantâneo
+            if hasattr(self, 'force_close_next') and self.force_close_next:
+                logger.warning(f"FECHAMENTO FORÇADO: {getattr(self, 'close_reason', 'Não especificado')}")
+                self.close_position()
+                self.force_close_next = False
+                return
+                
+            logger.info("=" * 70)
+            logger.info("ANÁLISE MULTI-INDICADOR + TEMPO REAL")
+            
+            # Obter dados históricos
+            df = self.get_ohlcv_data(limit=100)
+            if df is None or len(df) < 50:
+                logger.error("Dados insuficientes")
+                return
+            
+            # Calcular todos os indicadores
+            df = self.calculate_all_indicators(df)
+            
+            # Usar preço em tempo real se disponível, senão usar do DataFrame
+            realtime_price = self.price_manager.get_current_price()
+            if realtime_price:
+                current_price = realtime_price
+                logger.info(f"Usando preço TEMPO REAL: ${current_price:.4f}")
+            else:
+                current_price = df['close'].iloc[-1]
+                logger.info(f"Usando preço histórico: ${current_price:.4f}")
+                
+            latest = df.iloc[-1]
+            
+            # Informações detalhadas
+            logger.info(f"Supertrend: {'BULL' if latest['supertrend_direction'] == 1 else 'BEAR'} (${latest['supertrend']:.2f})")
+            logger.info(f"AlgoAlpha: {latest['algo_alpha']:.3f} ({'BULL' if latest['algo_alpha_signal'] == 1 else 'BEAR'})")
+            logger.info(f"MFI: {latest['mfi']:.1f} | ATR: {latest['atr']:.4f}")
+            
+            # Taxa de mudança de preço em tempo real
+            if self.price_manager.price_history:
+                price_change_1min = self.price_manager.get_price_change_rate(60)
+                if abs(price_change_1min) > 0.1:
+                    logger.info(f"Mudança 1min: {price_change_1min:+.3f}%")
+            
+            # 1. Verificar fechamento de posição existente (incluindo tempo real)
             if self.current_position and self.should_close_position(df, current_price):
                 self.close_position()
                 return
             
-            # 2. Procurar entrada em nova posição
+            # 2. Verificar análise rápida baseada em movimento de preço
+            if hasattr(self, 'trigger_fast_analysis') and self.trigger_fast_analysis:
+                logger.info("ANÁLISE RÁPIDA ACIONADA por movimento de preço")
+                self.trigger_fast_analysis = False
+                
+                # Análise expedita com threshold reduzido
+                should_enter, direction, strength = self.should_enter_position_fast(df, current_price)
+                if should_enter:
+                    logger.warning("ENTRADA RÁPIDA DETECTADA!")
+                    position_size = self.calculate_position_size()
+                    if position_size > 0:
+                        side = 'buy' if direction == 'long' else 'sell'
+                        success = self.open_position(side, position_size)
+                        if success:
+                            logger.info("POSIÇÃO RÁPIDA ABERTA COM SUCESSO!")
+                    return
+            
+            # 3. Procurar entrada em nova posição (análise normal)
             if not self.current_position:
                 should_enter, direction, strength = self.should_enter_position(df)
                 
@@ -887,7 +1168,7 @@ class TradingBot:
                     else:
                         logger.info("Aguardando sinais mais fortes")
             
-            # 3. Status da posição atual
+            # 4. Status da posição atual
             if self.current_position:
                 pnl_pct = 0
                 position_time = 0
@@ -902,17 +1183,52 @@ class TradingBot:
                 
                 logger.info(f"POSIÇÃO ATIVA: {self.current_position.upper()}")
                 logger.info(f"P&L: {pnl_pct:+.2f}% | Tempo: {position_time:.1f} min")
+                
+                # Alertas em tempo real
+                if abs(pnl_pct) >= 1.0:
+                    logger.warning(f"P&L significativo: {pnl_pct:+.2f}%")
             
-            # 4. Atualizar estados anteriores para próxima iteração
+            # 5. Atualizar estados anteriores para próxima iteração
             self.last_supertrend_direction = latest['supertrend_direction']
             self.last_algo_alpha_signal = latest['algo_alpha_signal']
             
-            # 5. Estatísticas
+            # 6. Estatísticas
             if self.total_trades > 0:
                 win_rate = (self.successful_trades / self.total_trades) * 100
                 logger.info(f"Trades: {self.total_trades} | Win Rate: {win_rate:.1f}%")
             
             logger.info("=" * 70)
+                
+        except Exception as e:
+            logger.error(f"Erro na execução da estratégia: {e}")
+            import traceback
+            logger.error(f"Traceback: {traceback.format_exc()}")
+    
+    def should_enter_position_fast(self, df: pd.DataFrame, current_price: float) -> Tuple[bool, str, int]:
+        """Análise rápida para entrada baseada em movimento de preço significativo"""
+        try:
+            # Análise expedita com threshold reduzido para movimento rápido
+            signal = self.generate_trading_signal(df)
+            
+            # Threshold mais baixo para análise rápida
+            fast_threshold = max(4, self.min_signal_strength - 2)
+            fast_confidence = max(50, self.min_confidence - 20)
+            
+            if (signal['action'] in ['buy', 'sell'] and 
+                signal['confidence'] >= fast_confidence and 
+                signal['strength'] >= fast_threshold):
+                
+                logger.warning(f"SINAL RÁPIDO {signal['direction'].upper()}")
+                logger.warning(f"Força: {signal['strength']} (fast_threshold: {fast_threshold})")
+                logger.warning(f"Confiança: {signal['confidence']:.1f}% (fast_min: {fast_confidence}%)")
+                
+                return True, signal['direction'], signal['strength']
+            
+            return False, None, signal['strength']
+            
+        except Exception as e:
+            logger.error(f"Erro na análise rápida: {e}")
+            return False, None, 0
                 
         except Exception as e:
             logger.error(f"Erro na execução da estratégia: {e}")
