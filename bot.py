@@ -86,7 +86,7 @@ class TradingBot:
                 high=df['high'],
                 low=df['low'],
                 close=df['close'],
-                length=self.supertrend_period,
+                period=self.supertrend_period,
                 multiplier=self.supertrend_multiplier
             )
             
