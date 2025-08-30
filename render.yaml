@@ -9,7 +9,7 @@ services:
     envVars:
       - key: BITGET_API_KEY
         sync: false
-      - key: BITGET_SECRET_KEY
+      - key: BITGET_API_SECRET
         sync: false
-      - key: BITGET_PASSWORD
+      - key: BITGET_PASSPHRASE
         sync: false
