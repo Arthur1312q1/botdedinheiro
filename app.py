@@ -57,8 +57,8 @@ def run_bot():
                     bot_status['current_price'] = None
                     bot_status['pnl'] = 0.0
                 
-                # Aguardar 5 minutos
-                time.sleep(300)
+                # Aguardar 2 minutos (timeframe 5m)
+                time.sleep(120)
                 
             except Exception as e:
                 bot_status['error'] = str(e)
