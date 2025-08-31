@@ -110,7 +110,7 @@ HTML_TEMPLATE = '''
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Trading Bot - Ultra Agressivo</title>
+    <title>Trading Bot - Estratégia de Reversão Contínua</title>
     <style>
         * {
             margin: 0;
@@ -376,8 +376,8 @@ HTML_TEMPLATE = '''
 <body>
     <div class="container">
         <div class="header">
-            <h1>Trading Bot - Multi-Indicador Preciso</h1>
-            <p>ETH/USDT Perpetual • Bitget • Supertrend + AlgoAlpha + ATR + MFI • Trades Precisos</p>
+            <h1>Trading Bot - Estratégia de Reversão Contínua</h1>
+            <p>ETH/USDT Perpetual • Bitget • Supertrend (Principal) + Confirmações • SEM Stop Loss/Take Profit</p>
         </div>
         
         <div class="control-buttons">
@@ -453,7 +453,7 @@ HTML_TEMPLATE = '''
         
         <div class="card">
             <h3>Logs do Sistema</h3>
-            <div class="logs" id="system-logs">Sistema iniciado. Bot ultra agressivo pronto para trading...</div>
+            <div class="logs" id="system-logs">Sistema iniciado. Bot de reversão contínua pronto para trading...</div>
         </div>
         
         <div id="error-container"></div>
@@ -474,7 +474,7 @@ HTML_TEMPLATE = '''
         
         async function startBot() {
             try {
-                addLog('🚀 Iniciando bot de trading ultra agressivo...');
+                addLog('🚀 Iniciando bot de reversão contínua...');
                 const response = await fetch('/start');
                 const data = await response.json();
                 addLog(`✅ ${data.message}`);
@@ -528,7 +528,7 @@ HTML_TEMPLATE = '''
                 
                 if (status.running) {
                     indicator.className = 'status-indicator status-running';
-                    statusText.textContent = 'Bot Ativo - Multi-Indicador Preciso';
+                    statusText.textContent = 'Bot Ativo - Reversão Contínua';
                 } else {
                     indicator.className = 'status-indicator status-stopped';
                     statusText.textContent = 'Bot Parado';
@@ -605,10 +605,12 @@ HTML_TEMPLATE = '''
         refreshStatus();
         
         // Logs iniciais
-        addLog('🤖 Interface carregada - Sistema ultra agressivo ativo');
-        addLog('⚡ Threshold mínimo: 1 ponto | Cooldown: 60s');
-        addLog('📈 Timeframe: 3m | Stop: 1.5% | Take Profit: 2.5%');
-        addLog('🚀 Pronto para detectar sinais e executar trades!');
+        addLog('🤖 Interface carregada - Estratégia de reversão contínua ativa');
+        addLog('🔄 Supertrend como decisor principal');
+        addLog('✅ AlgoAlpha + MFI + ATR como confirmação');
+        addLog('🚫 SEM stop loss ou take profit - apenas reversões');
+        addLog('⚡ Threshold: 3 pontos | Cooldown: 60s | Timeframe: 3m');
+        addLog('🎯 Pronto para detectar sinais e executar reversões!');
     </script>
 </body>
 </html>
@@ -616,7 +618,7 @@ HTML_TEMPLATE = '''
 
 @app.route('/')
 def home():
-    """Página inicial com interface otimizada"""
+    """Página inicial com interface de reversão contínua"""
     return render_template_string(HTML_TEMPLATE)
 
 @app.route('/status')
@@ -671,10 +673,10 @@ def health():
     return jsonify({
         'status': 'healthy',
         'timestamp': time.strftime('%Y-%m-%d %H:%M:%S'),
-        'mode': 'multi_indicator_precision',
-        'indicators': 'supertrend_algoalpha_atr_mfi',
-        'threshold': 5,
-        'confidence': '60%'
+        'strategy': 'continuous_reversal',
+        'indicators': 'supertrend_primary_algoalpha_mfi_atr_confirmation',
+        'no_stop_loss': True,
+        'no_take_profit': True
     })
 
 @app.route('/start')
@@ -685,7 +687,7 @@ def start_bot():
     if not bot_status['running']:
         bot_thread = threading.Thread(target=run_bot, daemon=True)
         bot_thread.start()
-        return jsonify({'message': 'Bot iniciado - Multi-Indicador Preciso!'})
+        return jsonify({'message': 'Bot iniciado - Estratégia de Reversão Contínua!'})
     else:
         return jsonify({'message': 'Bot já está rodando'})
 
@@ -722,12 +724,12 @@ def get_position():
 
 @app.route('/force-close')
 def force_close():
-    """Força o fechamento da posição atual"""
+    """Força o fechamento da posição atual (apenas manual via interface)"""
     if trading_bot and trading_bot.current_position:
         try:
             success = trading_bot.close_position()
             if success:
-                return jsonify({'message': 'Posição fechada com sucesso!'})
+                return jsonify({'message': 'Posição fechada manualmente! AVISO: Bot continuará operando normalmente.'})
             else:
                 return jsonify({'error': 'Falha ao fechar posição'})
         except Exception as e:
