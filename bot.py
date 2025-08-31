@@ -157,7 +157,7 @@ class RealTimePriceManager:
 
 class TradingBot:
     def __init__(self):
-        """Inicializa o bot com estratégia multi-indicador precisa"""
+        """Inicializa o bot com estratégia de reversão contínua"""
         # Configurações da exchange
         self.exchange = self._setup_exchange()
         self.symbol = 'ETHUSDT_UMCBL'
@@ -177,14 +177,14 @@ class TradingBot:
         self.mfi_period = 10
         self.mfi_sma_period = 5
         
-        # AlgoAlpha parameters (baseado em análise técnica avançada)
+        # AlgoAlpha parameters
         self.algo_alpha_fast = 8
         self.algo_alpha_slow = 21
         self.algo_alpha_signal = 5
         
-        # Thresholds para precisão aprimorada
-        self.mfi_oversold = 25  # Mais conservador
-        self.mfi_overbought = 75  # Mais conservador
+        # Thresholds para MFI
+        self.mfi_oversold = 25
+        self.mfi_overbought = 75
         self.mfi_neutral = 50
         
         # Controle de trades - estratégia de reversão contínua
@@ -202,8 +202,8 @@ class TradingBot:
         # Inicializar gerenciador de preços em tempo real
         self.price_manager = RealTimePriceManager(symbol='ETHUSDT')
         
-        logger.info("Bot inicializado - ESTRATÉGIA MULTI-INDICADOR PRECISA")
-        logger.info(f"Indicadores: Supertrend + AlgoAlpha + ATR + MFI")
+        logger.info("Bot inicializado - ESTRATÉGIA DE REVERSÃO CONTÍNUA")
+        logger.info(f"Indicadores: Supertrend (principal) + AlgoAlpha + ATR + MFI (confirmação)")
         logger.info(f"Timeframe: {self.timeframe} | Cooldown: {self.signal_cooldown}s")
     
     def _setup_exchange(self) -> ccxt.bitget:
@@ -585,6 +585,62 @@ class TradingBot:
             logger.error(f"Erro crítico na análise de entrada: {e}")
             return False, None, 0
     
+    def should_close_position(self, df: pd.DataFrame, current_price: float) -> bool:
+        """Esta função não é mais necessária - a estratégia sempre reverte posições"""
+        # Com a estratégia de reversão contínua, não fechamos posições
+        # Apenas revertemos quando o Supertrend mudar
+        return False
+    
+    def get_position_info(self) -> Optional[Dict[str, Any]]:
+        """Obtém informações da posição atual"""
+        try:
+            positions = self.exchange.fetch_positions([self.symbol])
+            for position in positions:
+                if position['symbol'] == self.symbol and abs(float(position['contracts'] or 0)) > 0:
+                    return {
+                        'side': position['side'],
+                        'size': abs(float(position['contracts'] or 0)),
+                        'entry_price': float(position['entryPrice'] or 0),
+                        'unrealized_pnl': float(position['unrealizedPnl'] or 0),
+                        'percentage': float(position['percentage'] or 0)
+                    }
+            return None
+        except Exception as e:
+            logger.error(f"Erro ao obter informações da posição: {e}")
+            return None
+    
+    def close_position(self) -> bool:
+        """Fecha a posição atual (usado apenas para fechamento manual via interface)"""
+        try:
+            position_info = self.get_position_info()
+            if not position_info:
+                logger.info("Nenhuma posição para fechar")
+                self._reset_position_state()
+                return True
+            
+            side = 'buy' if position_info['side'] == 'short' else 'sell'
+            
+            order = self.exchange.create_market_order(
+                symbol=self.symbol,
+                side=side,
+                amount=position_info['size'],
+                params={'reduceOnly': True}
+            )
+            
+            # Estatísticas
+            if position_info['percentage'] > 0:
+                self.successful_trades += 1
+            
+            logger.info(f"POSIÇÃO {self.current_position.upper()} FECHADA MANUALMENTE")
+            logger.info(f"P&L: {position_info['percentage']:.2f}%")
+            
+            self._reset_position_state()
+            return True
+            
+        except Exception as e:
+            logger.error(f"Erro ao fechar posição: {e}")
+            return False
+    
     def reverse_position(self, new_direction: str, position_size: float) -> bool:
         """Reverte a posição atual para a nova direção"""
         try:
@@ -648,62 +704,6 @@ class TradingBot:
             logger.error(f"Erro crítico na reversão: {e}")
             import traceback
             logger.error(f"Traceback: {traceback.format_exc()}")
-            return False
-    
-    def should_close_position(self, df: pd.DataFrame, current_price: float) -> bool:
-        """Esta função não é mais necessária - a estratégia sempre reverte posições"""
-        # Com a estratégia de reversão contínua, não fechamos posições
-        # Apenas revertemos quando o Supertrend mudar
-        return False
-    
-    def get_position_info(self) -> Optional[Dict[str, Any]]:
-        """Obtém informações da posição atual"""
-        try:
-            positions = self.exchange.fetch_positions([self.symbol])
-            for position in positions:
-                if position['symbol'] == self.symbol and abs(float(position['contracts'] or 0)) > 0:
-                    return {
-                        'side': position['side'],
-                        'size': abs(float(position['contracts'] or 0)),
-                        'entry_price': float(position['entryPrice'] or 0),
-                        'unrealized_pnl': float(position['unrealizedPnl'] or 0),
-                        'percentage': float(position['percentage'] or 0)
-                    }
-            return None
-        except Exception as e:
-            logger.error(f"Erro ao obter informações da posição: {e}")
-            return None
-    
-    def close_position(self) -> bool:
-        """Fecha a posição atual (usado apenas para fechamento manual via interface)"""
-        try:
-            position_info = self.get_position_info()
-            if not position_info:
-                logger.info("Nenhuma posição para fechar")
-                self._reset_position_state()
-                return True
-            
-            side = 'buy' if position_info['side'] == 'short' else 'sell'
-            
-            order = self.exchange.create_market_order(
-                symbol=self.symbol,
-                side=side,
-                amount=position_info['size'],
-                params={'reduceOnly': True}
-            )
-            
-            # Estatísticas
-            if position_info['percentage'] > 0:
-                self.successful_trades += 1
-            
-            logger.info(f"POSIÇÃO {self.current_position.upper()} FECHADA MANUALMENTE")
-            logger.info(f"P&L: {position_info['percentage']:.2f}%")
-            
-            self._reset_position_state()
-            return True
-            
-        except Exception as e:
-            logger.error(f"Erro ao fechar posição: {e}")
             return False
     
     def open_position(self, side: str, amount: float) -> bool:
@@ -1000,90 +1000,9 @@ class TradingBot:
                 win_rate = (self.successful_trades / self.total_trades) * 100
                 logger.info(f"TRADES: {self.total_trades} | SUCESSOS: {self.successful_trades} | WIN RATE: {win_rate:.1f}%")
             
-            logger.info("=" * 70)
-                
-        except Exception as e:
-            logger.error(f"Erro na execução da estratégia: {e}")
-            import traceback
-            logger.error(f"Traceback: {traceback.format_exc()}")_manager.price_history:
-                price_change_1min = self.price_manager.get_price_change_rate(60)
-                if abs(price_change_1min) > 0.1:
-                    logger.info(f"Mudança 1min: {price_change_1min:+.3f}%")
-            
-            # 1. Verificar fechamento de posição existente (incluindo tempo real)
-            if self.current_position and self.should_close_position(df, current_price):
-                self.close_position()
-                return
-            
-            # 2. Verificar análise rápida baseada em movimento de preço
-            if hasattr(self, 'trigger_fast_analysis') and self.trigger_fast_analysis:
-                logger.info("ANÁLISE RÁPIDA ACIONADA por movimento de preço")
-                self.trigger_fast_analysis = False
-                
-                # Análise expedita com threshold reduzido
-                should_enter, direction, strength = self.should_enter_position_fast(df, current_price)
-                if should_enter:
-                    logger.warning("ENTRADA RÁPIDA DETECTADA!")
-                    position_size = self.calculate_position_size()
-                    if position_size > 0:
-                        side = 'buy' if direction == 'long' else 'sell'
-                        success = self.open_position(side, position_size)
-                        if success:
-                            logger.info("POSIÇÃO RÁPIDA ABERTA COM SUCESSO!")
-                    return
-            
-            # 3. Procurar entrada em nova posição (análise normal)
-            if not self.current_position:
-                should_enter, direction, strength = self.should_enter_position(df)
-                
-                if should_enter and direction:
-                    logger.info(f"ENTRADA {direction.upper()} DETECTADA - Força: {strength}")
-                    
-                    position_size = self.calculate_position_size()
-                    if position_size > 0:
-                        side = 'buy' if direction == 'long' else 'sell'
-                        success = self.open_position(side, position_size)
-                        
-                        if success:
-                            logger.info("POSIÇÃO ABERTA COM SUCESSO!")
-                        else:
-                            logger.error("FALHA AO ABRIR POSIÇÃO")
-                    else:
-                        logger.error("SALDO INSUFICIENTE")
-                else:
-                    if strength >= 3:
-                        logger.info(f"Sinal detectado (força: {strength}) mas abaixo do threshold")
-                    else:
-                        logger.info("Aguardando sinais mais fortes")
-            
-            # 4. Status da posição atual
-            if self.current_position:
-                pnl_pct = 0
-                position_time = 0
-                
-                if self.entry_price:
-                    pnl_pct = ((current_price - self.entry_price) / self.entry_price) * 100
-                    if self.current_position == 'short':
-                        pnl_pct *= -1
-                
-                if self.position_start_time:
-                    position_time = (time.time() - self.position_start_time) / 60
-                
-                logger.info(f"POSIÇÃO ATIVA: {self.current_position.upper()}")
-                logger.info(f"P&L: {pnl_pct:+.2f}% | Tempo: {position_time:.1f} min")
-                
-                # Alertas em tempo real
-                if abs(pnl_pct) >= 1.0:
-                    logger.warning(f"P&L significativo: {pnl_pct:+.2f}%")
-            
-            # 5. Atualizar estados anteriores para próxima iteração
+            # Atualizar estados anteriores
             self.last_supertrend_direction = latest['supertrend_direction']
             self.last_algo_alpha_signal = latest['algo_alpha_signal']
-            
-            # 6. Estatísticas
-            if self.total_trades > 0:
-                win_rate = (self.successful_trades / self.total_trades) * 100
-                logger.info(f"Trades: {self.total_trades} | Win Rate: {win_rate:.1f}%")
             
             logger.info("=" * 70)
                 
