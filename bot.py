@@ -652,53 +652,97 @@ class TradingBot:
                 if position_info:
                     close_side = 'buy' if position_info['side'] == 'short' else 'sell'
                     
-                    close_order = self.exchange.create_market_order(
+                    # Usar ordem limit para fechar
+                    ticker = self.exchange.fetch_ticker(self.symbol)
+                    current_price = float(ticker['last'])
+                    
+                    if close_side == 'buy':
+                        close_price = current_price * 1.001  # 0.1% acima
+                    else:
+                        close_price = current_price * 0.999  # 0.1% abaixo
+                    
+                    close_order = self.exchange.create_order(
                         symbol=self.symbol,
+                        type='limit',
                         side=close_side,
                         amount=position_info['size'],
-                        params={'reduceOnly': True}
+                        price=close_price,
+                        params={'reduceOnly': True, 'timeInForce': 'IOC'}
                     )
                     
-                    # Calcular resultado do trade
-                    if position_info['percentage'] > 0:
-                        self.successful_trades += 1
-                        logger.info(f"TRADE LUCRO: +{position_info['percentage']:.2f}%")
-                    else:
-                        logger.info(f"TRADE PREJUÍZO: {position_info['percentage']:.2f}%")
+                    # Aguardar fechamento
+                    time.sleep(2)
                     
-                    logger.info(f"Posição {self.current_position.upper()} fechada")
+                    # Verificar se fechou
+                    try:
+                        close_status = self.exchange.fetch_order(close_order['id'], self.symbol)
+                        if close_status.get('status') == 'closed':
+                            # Calcular resultado do trade
+                            if position_info['percentage'] > 0:
+                                self.successful_trades += 1
+                                logger.info(f"TRADE LUCRO: +{position_info['percentage']:.2f}%")
+                            else:
+                                logger.info(f"TRADE PREJUÍZO: {position_info['percentage']:.2f}%")
+                            
+                            logger.info(f"Posição {self.current_position.upper()} fechada")
+                        else:
+                            logger.warning("Posição pode não ter fechado completamente")
+                    except Exception as e:
+                        logger.warning(f"Erro ao verificar fechamento: {e}")
+                    
                     time.sleep(1)  # Aguardar processamento
             
             # 2. Abrir nova posição na direção oposta
             new_side = 'buy' if new_direction == 'long' else 'sell'
             
-            open_order = self.exchange.create_market_order(
+            # Usar mesma lógica do open_position
+            ticker = self.exchange.fetch_ticker(self.symbol)
+            current_price = float(ticker['last'])
+            
+            if new_side == 'buy':
+                limit_price = current_price * 1.001
+            else:
+                limit_price = current_price * 0.999
+            
+            open_order = self.exchange.create_order(
                 symbol=self.symbol,
+                type='limit',
                 side=new_side,
-                amount=position_size
+                amount=position_size,
+                price=limit_price,
+                params={'timeInForce': 'IOC'}
             )
             
-            # Verificar execução
-            filled_amount = float(open_order.get('filled', 0))
-            avg_price = float(open_order.get('average', 0)) or float(open_order.get('price', 0))
+            # Aguardar execução
+            time.sleep(3)
             
-            if (open_order.get('status') == 'closed' or filled_amount > 0) and avg_price > 0:
-                # Atualizar estado
-                self.current_position = new_direction
-                self.entry_price = avg_price
-                self.position_size = filled_amount
-                self.position_start_time = time.time()
-                self.total_trades += 1
+            # Verificar execução
+            try:
+                open_status = self.exchange.fetch_order(open_order['id'], self.symbol)
+                filled_amount = float(open_status.get('filled', 0))
+                avg_price = float(open_status.get('average', 0))
                 
-                logger.info(f"REVERSÃO COMPLETA!")
-                logger.info(f"Nova posição {new_direction.upper()}: {filled_amount} ETH @ ${avg_price:.4f}")
-                logger.info(f"Trade #{self.total_trades}")
-                
-                return True
-            else:
-                logger.error("Falha na abertura da nova posição")
-                self._reset_position_state()
-                return False
+                if open_status.get('status') == 'closed' and filled_amount > 0 and avg_price > 0:
+                    # Atualizar estado
+                    self.current_position = new_direction
+                    self.entry_price = avg_price
+                    self.position_size = filled_amount
+                    self.position_start_time = time.time()
+                    self.total_trades += 1
+                    
+                    logger.info(f"REVERSÃO COMPLETA!")
+                    logger.info(f"Nova posição {new_direction.upper()}: {filled_amount:.6f} ETH @ ${avg_price:.4f}")
+                    logger.info(f"Trade #{self.total_trades}")
+                    
+                    return True
+                else:
+                    logger.error("Falha na abertura da nova posição")
+                    # Tentar fallback
+                    return self._try_market_order_fallback(new_side, position_size)
+                    
+            except Exception as e:
+                logger.error(f"Erro ao verificar abertura: {e}")
+                return self._try_market_order_fallback(new_side, position_size)
                 
         except Exception as e:
             logger.error(f"Erro crítico na reversão: {e}")
@@ -707,7 +751,7 @@ class TradingBot:
             return False
     
     def open_position(self, side: str, amount: float) -> bool:
-        """Abre uma nova posição com verificações aprimoradas"""
+        """Abre uma nova posição usando ordens limit"""
         try:
             if amount <= 0:
                 logger.error(f"Quantidade inválida: {amount}")
@@ -720,7 +764,7 @@ class TradingBot:
             for attempt in range(3):
                 try:
                     result = self.exchange.set_leverage(self.leverage, self.symbol)
-                    logger.info(f"Alavancagem {self.leverage}x configurada: {result}")
+                    logger.info(f"Alavancagem {self.leverage}x configurada")
                     leverage_set = True
                     break
                 except Exception as e:
@@ -730,64 +774,139 @@ class TradingBot:
             if not leverage_set:
                 logger.warning("Não foi possível configurar alavancagem, continuando...")
             
-            # Criar ordem de mercado com parâmetros otimizados
-            order_params = {
-                'type': 'market',
-                'timeInForce': 'IOC'  # Immediate or Cancel
-            }
+            # Obter preço atual para ordem limit
+            ticker = self.exchange.fetch_ticker(self.symbol)
+            current_price = float(ticker['last'])
             
-            logger.info(f"Criando ordem {side} para {amount} ETH...")
-            order = self.exchange.create_market_order(
+            # Ajustar preço para ordem limit (pequeno spread para execução rápida)
+            if side == 'buy':
+                limit_price = current_price * 1.001  # 0.1% acima do mercado
+            else:  # sell
+                limit_price = current_price * 0.999  # 0.1% abaixo do mercado
+            
+            logger.info(f"Preço limite: ${limit_price:.4f} (mercado: ${current_price:.4f})")
+            
+            # Criar ordem limit
+            order = self.exchange.create_order(
                 symbol=self.symbol,
+                type='limit',
                 side=side,
                 amount=amount,
-                params=order_params
+                price=limit_price,
+                params={
+                    'timeInForce': 'IOC'  # Immediate or Cancel
+                }
             )
             
-            logger.info(f"Ordem criada: {order.get('id', 'N/A')}")
+            logger.info(f"Ordem limit criada: {order.get('id', 'N/A')}")
             
-            # Aguardar processamento com verificação
-            time.sleep(2)
+            # Aguardar execução
+            time.sleep(3)
             
-            # Verificar status da ordem
+            # Verificar se foi executada
             if order.get('id'):
                 try:
                     order_status = self.exchange.fetch_order(order['id'], self.symbol)
-                    logger.info(f"Status da ordem: {order_status.get('status', 'N/A')}")
+                    filled_amount = float(order_status.get('filled', 0))
+                    avg_price = float(order_status.get('average', 0))
+                    
+                    if order_status.get('status') == 'closed' and filled_amount > 0 and avg_price > 0:
+                        # Ordem executada com sucesso
+                        self.current_position = 'long' if side == 'buy' else 'short'
+                        self.entry_price = avg_price
+                        self.position_size = filled_amount
+                        self.position_start_time = time.time()
+                        self.total_trades += 1
+                        
+                        logger.info(f"POSIÇÃO {self.current_position.upper()} ABERTA COM SUCESSO!")
+                        logger.info(f"Preço de entrada: ${self.entry_price:.4f}")
+                        logger.info(f"Quantidade: {self.position_size:.6f} ETH")
+                        logger.info(f"Trade #{self.total_trades}")
+                        
+                        return True
+                    else:
+                        # Ordem não executada - tentar ordem market como fallback
+                        logger.warning("Ordem limit não executada, tentando market...")
+                        try:
+                            # Cancelar ordem limit pendente
+                            self.exchange.cancel_order(order['id'], self.symbol)
+                        except:
+                            pass
+                        
+                        # Tentar ordem market via API direta se disponível
+                        return self._try_market_order_fallback(side, amount)
+                        
                 except Exception as e:
-                    logger.warning(f"Não foi possível verificar status da ordem: {e}")
+                    logger.error(f"Erro ao verificar status da ordem: {e}")
+                    return False
             
-            # Verificar execução
-            filled_amount = float(order.get('filled', 0))
-            avg_price = float(order.get('average', 0)) or float(order.get('price', 0))
-            
-            if (order.get('status') == 'closed' or filled_amount > 0) and avg_price > 0:
-                # Atualizar estado
-                self.current_position = 'long' if side == 'buy' else 'short'
-                self.entry_price = avg_price
-                self.position_size = filled_amount
-                self.position_start_time = time.time()
-                self.total_trades += 1
-                
-                logger.info(f"POSIÇÃO {self.current_position.upper()} ABERTA COM SUCESSO!")
-                logger.info(f"Preço de entrada: ${self.entry_price:.4f}")
-                logger.info(f"Quantidade preenchida: {self.position_size} ETH")
-                logger.info(f"Valor da posição: ${self.position_size * self.entry_price:.2f}")
-                logger.info(f"Trade #{self.total_trades}")
-                
-                return True
-            else:
-                logger.error(f"Ordem não executada adequadamente:")
-                logger.error(f"- Status: {order.get('status', 'N/A')}")
-                logger.error(f"- Preenchido: {filled_amount} ETH")
-                logger.error(f"- Preço médio: ${avg_price:.4f}")
-                logger.error(f"- Ordem completa: {order}")
-                return False
+            return False
                 
         except Exception as e:
             logger.error(f"Erro crítico ao abrir posição {side}: {e}")
-            import traceback
-            logger.error(f"Traceback: {traceback.format_exc()}")
+            # Tentar fallback para market order
+            return self._try_market_order_fallback(side, amount)
+    
+    def _try_market_order_fallback(self, side: str, amount: float) -> bool:
+        """Tenta executar ordem market como fallback"""
+        try:
+            logger.info("Tentando fallback com ordem market...")
+            
+            # Obter preço atual
+            ticker = self.exchange.fetch_ticker(self.symbol)
+            current_price = float(ticker['last'])
+            
+            # Calcular valor aproximado
+            notional_value = amount * current_price
+            
+            # Tentar diferentes variações de parâmetros
+            market_params_variants = [
+                {'type': 'market'},
+                {'orderType': 'market'},
+                {'force': True},
+                {'reduceOnly': False},
+                {}  # Sem parâmetros extras
+            ]
+            
+            for params in market_params_variants:
+                try:
+                    order = self.exchange.create_order(
+                        symbol=self.symbol,
+                        type='market',
+                        side=side,
+                        amount=amount,
+                        price=None,
+                        params=params
+                    )
+                    
+                    if order and order.get('id'):
+                        time.sleep(2)
+                        order_status = self.exchange.fetch_order(order['id'], self.symbol)
+                        
+                        filled_amount = float(order_status.get('filled', 0))
+                        avg_price = float(order_status.get('average', 0))
+                        
+                        if filled_amount > 0 and avg_price > 0:
+                            self.current_position = 'long' if side == 'buy' else 'short'
+                            self.entry_price = avg_price
+                            self.position_size = filled_amount
+                            self.position_start_time = time.time()
+                            self.total_trades += 1
+                            
+                            logger.info(f"POSIÇÃO {self.current_position.upper()} ABERTA (fallback)!")
+                            logger.info(f"Preço: ${avg_price:.4f} | Quantidade: {filled_amount:.6f} ETH")
+                            
+                            return True
+                    
+                except Exception as e:
+                    logger.debug(f"Fallback tentativa falhou: {e}")
+                    continue
+            
+            logger.error("Todas as tentativas de fallback falharam")
+            return False
+            
+        except Exception as e:
+            logger.error(f"Erro no fallback market order: {e}")
             return False
     
     def calculate_position_size(self) -> float:
@@ -855,8 +974,13 @@ class TradingBot:
                 limits = market.get('limits', {})
                 amount_limits = limits.get('amount', {})
                 
-                min_amount = float(amount_limits.get('min', 0.001))
-                max_amount = float(amount_limits.get('max', 100.0))
+                # Tratamento seguro dos limites - valores padrão se None
+                min_amount_raw = amount_limits.get('min')
+                max_amount_raw = amount_limits.get('max')
+                
+                # Usar valores padrão seguros se não conseguir obter da exchange
+                min_amount = 0.001 if min_amount_raw is None else float(min_amount_raw)
+                max_amount = 100.0 if max_amount_raw is None else float(max_amount_raw)
                 
                 logger.info(f"Limites da exchange - Min: {min_amount} ETH, Max: {max_amount} ETH")
                 
@@ -864,6 +988,7 @@ class TradingBot:
                 logger.warning(f"Erro ao obter limites: {e}")
                 min_amount = 0.001  # Valor padrão seguro
                 max_amount = 100.0
+                logger.info(f"Usando limites padrão - Min: {min_amount} ETH, Max: {max_amount} ETH")
             
             # Aplicar limites
             if position_size_eth < min_amount:
@@ -874,15 +999,25 @@ class TradingBot:
             # Limitar ao máximo permitido
             position_size_eth = min(position_size_eth, max_amount)
             
-            # Aplicar precisão (arredondar para baixo para evitar erros)
+            # Aplicar precisão (usar método mais simples e seguro)
             try:
-                precision = market.get('precision', {}).get('amount', 4)
-                if precision is None:
-                    precision = 4
-                position_size_eth = float(f"{position_size_eth:.{precision}f}")
+                # Tentar obter precisão da exchange
+                precision_info = market.get('precision', {})
+                amount_precision = precision_info.get('amount')
+                
+                if amount_precision is not None and isinstance(amount_precision, (int, float)):
+                    # Arredondar para baixo com a precisão especificada
+                    precision = int(amount_precision)
+                    multiplier = 10 ** precision
+                    position_size_eth = int(position_size_eth * multiplier) / multiplier
+                else:
+                    # Fallback para 4 casas decimais
+                    position_size_eth = int(position_size_eth * 10000) / 10000
+                    
             except Exception as e:
                 logger.warning(f"Erro ao aplicar precisão: {e}")
-                position_size_eth = round(position_size_eth, 4)
+                # Fallback simples - 4 casas decimais
+                position_size_eth = int(position_size_eth * 10000) / 10000
             
             # Verificação final
             position_value_usd = position_size_eth * current_price
