@@ -966,7 +966,7 @@ class TradingBot:
             logger.info(f"- Alavancagem: {self.leverage}x")
             logger.info(f"- Preço ETH: ${current_price:.4f}")
             logger.info(f"- Valor total controlado: ${usable_balance * self.leverage:.2f}")
-            logger.info(f"- Tamanho calculado: {position_size_eth:.6f} ETH")
+            logger.info(f"- Tamanho ANTES dos limites: {position_size_eth:.6f} ETH")
             
             # Obter limites da exchange
             try:
@@ -979,58 +979,56 @@ class TradingBot:
                 max_amount_raw = amount_limits.get('max')
                 
                 # Usar valores padrão seguros se não conseguir obter da exchange
-                min_amount = 0.001 if min_amount_raw is None else float(min_amount_raw)
+                min_amount = 0.01 if min_amount_raw is None else float(min_amount_raw)
                 max_amount = 100.0 if max_amount_raw is None else float(max_amount_raw)
                 
                 logger.info(f"Limites da exchange - Min: {min_amount} ETH, Max: {max_amount} ETH")
                 
             except Exception as e:
                 logger.warning(f"Erro ao obter limites: {e}")
-                min_amount = 0.001  # Valor padrão seguro
+                min_amount = 0.01  # Valor padrão seguro para Bitget
                 max_amount = 100.0
                 logger.info(f"Usando limites padrão - Min: {min_amount} ETH, Max: {max_amount} ETH")
             
-            # Aplicar limites
+            # AJUSTAR PARA MÍNIMO SE NECESSÁRIO
             if position_size_eth < min_amount:
-                logger.error(f"Posição calculada {position_size_eth:.6f} ETH menor que mínimo {min_amount} ETH")
-                logger.error(f"Necessário pelo menos ${min_amount * current_price / self.leverage:.2f} de saldo")
-                return 0
+                # Se temos saldo suficiente para o mínimo, usar o mínimo
+                required_balance_for_min = (min_amount * current_price) / self.leverage
+                
+                logger.warning(f"Posição calculada ({position_size_eth:.6f}) menor que mínimo ({min_amount})")
+                logger.info(f"Saldo necessário para mínimo: ${required_balance_for_min:.2f}")
+                logger.info(f"Saldo disponível: ${usable_balance:.2f}")
+                
+                if usable_balance >= required_balance_for_min * 0.95:  # 95% do necessário (margem para taxas)
+                    logger.warning(f"FORÇANDO MÍNIMO: {position_size_eth:.6f} -> {min_amount}")
+                    position_size_eth = min_amount
+                else:
+                    logger.error(f"Saldo insuficiente mesmo para o mínimo")
+                    logger.error(f"Necessário: ${required_balance_for_min:.2f} | Disponível: ${usable_balance:.2f}")
+                    return 0
             
             # Limitar ao máximo permitido
             position_size_eth = min(position_size_eth, max_amount)
             
-            # Aplicar precisão (usar método mais simples e seguro)
-            try:
-                # Tentar obter precisão da exchange
-                precision_info = market.get('precision', {})
-                amount_precision = precision_info.get('amount')
-                
-                if amount_precision is not None and isinstance(amount_precision, (int, float)):
-                    # Arredondar para baixo com a precisão especificada
-                    precision = int(amount_precision)
-                    multiplier = 10 ** precision
-                    position_size_eth = int(position_size_eth * multiplier) / multiplier
-                else:
-                    # Fallback para 4 casas decimais
-                    position_size_eth = int(position_size_eth * 10000) / 10000
-                    
-            except Exception as e:
-                logger.warning(f"Erro ao aplicar precisão: {e}")
-                # Fallback simples - 4 casas decimais
-                position_size_eth = int(position_size_eth * 10000) / 10000
+            # Aplicar precisão simples (sem arredondar para baixo demais)
+            position_size_eth = round(position_size_eth, 4)  # 4 casas decimais sempre
             
             # Verificação final
             position_value_usd = position_size_eth * current_price
             logger.info(f"POSIÇÃO FINAL:")
-            logger.info(f"- Tamanho: {position_size_eth:.6f} ETH")
+            logger.info(f"- Tamanho APÓS limites e precisão: {position_size_eth:.6f} ETH")
             logger.info(f"- Valor da posição: ${position_value_usd:.2f}")
             logger.info(f"- Margem necessária: ${position_value_usd / self.leverage:.2f}")
+            logger.info(f"- Mínimo da exchange: {min_amount} ETH")
+            logger.info(f"- Atende mínimo? {position_size_eth >= min_amount}")
             
             if position_size_eth >= min_amount:
                 logger.info("✅ Posição válida calculada!")
                 return position_size_eth
             else:
                 logger.error("❌ Posição inválida após aplicar limites")
+                logger.error(f"Calculado: {position_size_eth:.6f} ETH < Mínimo: {min_amount} ETH")
+                logger.error(f"Para atingir mínimo precisa de: ${min_amount * current_price / self.leverage:.2f} USDT")
                 return 0
                 
         except Exception as e:
