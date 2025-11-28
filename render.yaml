@@ -1,15 +1,23 @@
 services:
   - type: web
-    name: trading-bot
-    env: python
+    name: paper-trading-eth
+    runtime: python
     plan: starter
     buildCommand: pip install -r requirements.txt
-    startCommand: python app.py
-    pythonVersion: "3.11"
+    startCommand: gunicorn app:app
     envVars:
-      - key: BITGET_API_KEY
+      - key: PYTHON_VERSION
+        value: 3.11.0
+      - key: PORT
+        generateValue: true
+      - key: RENDER_EXTERNAL_URL
         sync: false
-      - key: BITGET_API_SECRET
-        sync: false
-      - key: BITGET_PASSPHRASE
-        sync: false
+    
+    disk:
+      name: trading-data
+      mountPath: /opt/render/project/src/data
+      sizeGB: 1
+    
+    healthCheckPath: /health
+    
+    autoDeploy: true
