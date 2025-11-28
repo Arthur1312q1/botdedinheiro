@@ -1,746 +1,344 @@
-from flask import Flask, jsonify, render_template_string, request
+from flask import Flask, request, jsonify, render_template
+import json
+import sqlite3
 import threading
 import time
-import os
-import traceback
-from bot import TradingBot
+import requests
+from datetime import datetime
+from typing import Optional, Dict, List
 
 app = Flask(__name__)
 
-# Instância global do bot
-trading_bot = None
-bot_thread = None
-bot_status = {
-    'running': False,
-    'last_update': None,
-    'current_position': None,
-    'error': None,
-    'pnl': 0.0,
-    'entry_price': None,
-    'current_price': None,
-    'signal_strength': 0,
-    'position_duration': 0,
-    'trades_today': 0,
-    'total_trades': 0,
-    'successful_trades': 0,
-    'win_rate': 0.0,
-    'last_trade_result': None
-}
+# Configurações
+INITIAL_BALANCE = 100.0
+COMMISSION_RATE = 0.0005  # 0.05%
+DB_PATH = '/opt/render/project/src/data/trading.db'  # Caminho para Volume Disk no Render
+SELF_PING_INTERVAL = 600  # 10 minutos
+TRADING_PAIR = "ETH/USDT"
 
-def run_bot():
-    """Executa o bot em uma thread separada com melhor controle de erros"""
-    global trading_bot, bot_status
+class TradeSimulator:
+    def __init__(self):
+        self.init_database()
+        self.current_position = None
+        self.load_state()
     
-    try:
-        trading_bot = TradingBot()
-        bot_status['running'] = True
-        bot_status['error'] = None
+    def init_database(self):
+        """Inicializa o banco de dados SQLite"""
+        conn = sqlite3.connect(DB_PATH)
+        cursor = conn.cursor()
         
-        # Loop principal do bot
-        while bot_status['running']:
-            try:
-                trading_bot.run_strategy()
-                bot_status['last_update'] = time.strftime('%Y-%m-%d %H:%M:%S')
-                bot_status['current_position'] = trading_bot.current_position
-                bot_status['entry_price'] = trading_bot.entry_price
-                bot_status['total_trades'] = trading_bot.total_trades
-                bot_status['successful_trades'] = trading_bot.successful_trades
-                bot_status['error'] = None
-                
-                # Calcular win rate
-                if trading_bot.total_trades > 0:
-                    bot_status['win_rate'] = (trading_bot.successful_trades / trading_bot.total_trades) * 100
-                else:
-                    bot_status['win_rate'] = 0.0
-                
-                # Obter preço atual sempre
-                try:
-                    ticker = trading_bot.exchange.fetch_ticker(trading_bot.symbol)
-                    current_price = float(ticker['last'])
-                    bot_status['current_price'] = current_price
-                    
-                    # Calcular P&L se houver posição
-                    if trading_bot.current_position and trading_bot.entry_price:
-                        pnl_pct = ((current_price - trading_bot.entry_price) / trading_bot.entry_price) * 100
-                        if trading_bot.current_position == 'short':
-                            pnl_pct *= -1
-                        bot_status['pnl'] = round(pnl_pct, 2)
-                        
-                        # Calcular duração da posição
-                        if trading_bot.position_start_time:
-                            duration_minutes = (time.time() - trading_bot.position_start_time) / 60
-                            bot_status['position_duration'] = round(duration_minutes, 1)
-                    else:
-                        bot_status['pnl'] = 0.0
-                        bot_status['position_duration'] = 0
-                        
-                except Exception as price_error:
-                    print(f"Erro ao obter preço: {price_error}")
-                    bot_status['current_price'] = None
-                    bot_status['pnl'] = 0.0
-                
-                # Aguardar 90 segundos (timeframe 3m otimizado)
-                time.sleep(90)
-                
-            except Exception as e:
-                bot_status['error'] = str(e)
-                print(f"Erro na execução do bot: {e}")
-                print(f"Traceback: {traceback.format_exc()}")
-                time.sleep(30)  # Aguarda 30 segundos em caso de erro
-                
-    except Exception as e:
-        bot_status['running'] = False
-        bot_status['error'] = str(e)
-        print(f"Erro fatal no bot: {e}")
-        print(f"Traceback: {traceback.format_exc()}")
-
-def get_current_price():
-    """Função auxiliar para obter preço atual"""
-    try:
-        if trading_bot and trading_bot.exchange:
-            ticker = trading_bot.exchange.fetch_ticker('ETHUSDT_UMCBL')
-            return float(ticker['last'])
-    except Exception as e:
-        print(f"Erro ao obter preço atual: {e}")
-    return None
-
-HTML_TEMPLATE = '''
-<!DOCTYPE html>
-<html lang="pt-BR">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Trading Bot - Estratégia de Reversão Contínua</title>
-    <style>
-        * {
-            margin: 0;
-            padding: 0;
-            box-sizing: border-box;
-        }
+        # Tabela de trades
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS trades (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                action TEXT NOT NULL,
+                price REAL NOT NULL,
+                quantity REAL NOT NULL,
+                total_value REAL NOT NULL,
+                commission REAL NOT NULL,
+                balance_after REAL NOT NULL,
+                profit_loss REAL DEFAULT 0,
+                timestamp TEXT NOT NULL
+            )
+        ''')
         
-        body {
-            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-            background: linear-gradient(135deg, #0f1419, #1e2328);
-            color: white;
-            min-height: 100vh;
-        }
+        # Tabela de estado da conta
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS account_state (
+                id INTEGER PRIMARY KEY CHECK (id = 1),
+                balance REAL NOT NULL,
+                position_open INTEGER DEFAULT 0,
+                position_price REAL,
+                position_quantity REAL,
+                position_value REAL,
+                total_profit REAL DEFAULT 0,
+                peak_balance REAL NOT NULL,
+                last_updated TEXT NOT NULL
+            )
+        ''')
         
-        .container {
-            max-width: 1400px;
-            margin: 0 auto;
-            padding: 20px;
-        }
+        # Inicializa estado se não existir
+        cursor.execute('SELECT COUNT(*) FROM account_state')
+        if cursor.fetchone()[0] == 0:
+            cursor.execute('''
+                INSERT INTO account_state 
+                (id, balance, peak_balance, last_updated) 
+                VALUES (1, ?, ?, ?)
+            ''', (INITIAL_BALANCE, INITIAL_BALANCE, datetime.now().isoformat()))
         
-        .header {
-            text-align: center;
-            margin-bottom: 30px;
-            padding: 20px;
-            background: rgba(255,255,255,0.05);
-            border-radius: 15px;
-        }
-        
-        .header h1 {
-            font-size: 2.2em;
-            margin-bottom: 10px;
-            background: linear-gradient(45deg, #f0b90b, #ff6b35);
-            -webkit-background-clip: text;
-            -webkit-text-fill-color: transparent;
-        }
-        
-        .header p {
-            opacity: 0.8;
-            font-size: 1.1em;
-        }
-        
-        .status-grid {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
-            gap: 20px;
-            margin-bottom: 25px;
-        }
-        
-        .card {
-            background: rgba(255,255,255,0.08);
-            border-radius: 12px;
-            padding: 20px;
-            backdrop-filter: blur(10px);
-            border: 1px solid rgba(255,255,255,0.1);
-            position: relative;
-            overflow: hidden;
-        }
-        
-        .card::before {
-            content: '';
-            position: absolute;
-            top: 0;
-            left: 0;
-            right: 0;
-            height: 3px;
-            background: linear-gradient(90deg, #f0b90b, #ff6b35);
-        }
-        
-        .card h3 {
-            margin-bottom: 15px;
-            color: #f0b90b;
-            font-size: 1.1em;
-        }
-        
-        .status-indicator {
-            display: inline-block;
-            width: 10px;
-            height: 10px;
-            border-radius: 50%;
-            margin-right: 8px;
-        }
-        
-        .status-running {
-            background-color: #10b981;
-            animation: pulse 1.5s infinite;
-        }
-        
-        .status-stopped {
-            background-color: #ef4444;
-        }
-        
-        @keyframes pulse {
-            0%, 100% { opacity: 1; }
-            50% { opacity: 0.6; }
-        }
-        
-        .control-buttons {
-            display: flex;
-            gap: 15px;
-            justify-content: center;
-            margin-bottom: 25px;
-            flex-wrap: wrap;
-        }
-        
-        .btn {
-            padding: 12px 25px;
-            border: none;
-            border-radius: 8px;
-            font-size: 14px;
-            font-weight: 600;
-            cursor: pointer;
-            transition: all 0.3s ease;
-            text-decoration: none;
-            display: inline-block;
-            text-align: center;
-            min-width: 100px;
-        }
-        
-        .btn-start {
-            background: linear-gradient(45deg, #10b981, #059669);
-            color: white;
-        }
-        
-        .btn-start:hover {
-            transform: translateY(-1px);
-            box-shadow: 0 4px 12px rgba(16, 185, 129, 0.4);
-        }
-        
-        .btn-stop {
-            background: linear-gradient(45deg, #ef4444, #dc2626);
-            color: white;
-        }
-        
-        .btn-stop:hover {
-            transform: translateY(-1px);
-            box-shadow: 0 4px 12px rgba(239, 68, 68, 0.4);
-        }
-        
-        .btn-refresh {
-            background: linear-gradient(45deg, #3b82f6, #2563eb);
-            color: white;
-        }
-        
-        .btn-refresh:hover {
-            transform: translateY(-1px);
-            box-shadow: 0 4px 12px rgba(59, 130, 246, 0.4);
-        }
-        
-        .btn-close {
-            background: linear-gradient(45deg, #f59e0b, #d97706);
-            color: white;
-        }
-        
-        .btn-close:hover {
-            transform: translateY(-1px);
-            box-shadow: 0 4px 12px rgba(245, 158, 11, 0.4);
-        }
-        
-        .position-info {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
-            gap: 12px;
-        }
-        
-        .info-item {
-            text-align: center;
-            padding: 12px;
-            background: rgba(255,255,255,0.03);
-            border-radius: 8px;
-        }
-        
-        .info-label {
-            font-size: 0.85em;
-            opacity: 0.7;
-            margin-bottom: 4px;
-        }
-        
-        .info-value {
-            font-size: 1.1em;
-            font-weight: 600;
-        }
-        
-        .pnl-positive {
-            color: #10b981;
-        }
-        
-        .pnl-negative {
-            color: #ef4444;
-        }
-        
-        .position-long {
-            color: #10b981;
-        }
-        
-        .position-short {
-            color: #ef4444;
-        }
-        
-        .error-message {
-            background: rgba(239, 68, 68, 0.1);
-            border: 1px solid #ef4444;
-            border-radius: 8px;
-            padding: 15px;
-            margin-top: 20px;
-            word-break: break-word;
-        }
-        
-        .logs {
-            background: rgba(0,0,0,0.4);
-            border-radius: 8px;
-            padding: 15px;
-            font-family: 'Courier New', monospace;
-            font-size: 0.85em;
-            max-height: 300px;
-            overflow-y: auto;
-            border: 1px solid rgba(255,255,255,0.1);
-            white-space: pre-wrap;
-        }
-        
-        .stats-grid {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
-            gap: 10px;
-            margin-top: 15px;
-        }
-        
-        .stat-item {
-            text-align: center;
-            padding: 10px;
-            background: rgba(255,255,255,0.05);
-            border-radius: 6px;
-        }
-        
-        .win-rate-positive {
-            color: #10b981;
-        }
-        
-        .win-rate-negative {
-            color: #ef4444;
-        }
-        
-        @media (max-width: 768px) {
-            .container {
-                padding: 10px;
-            }
-            
-            .header h1 {
-                font-size: 1.8em;
-            }
-            
-            .control-buttons {
-                flex-direction: column;
-                align-items: center;
-            }
-            
-            .btn {
-                width: 100%;
-                max-width: 250px;
-            }
-        }
-    </style>
-</head>
-<body>
-    <div class="container">
-        <div class="header">
-            <h1>Trading Bot - Estratégia de Reversão Contínua</h1>
-            <p>ETH/USDT Perpetual • Bitget • Supertrend (Principal) + Confirmações • SEM Stop Loss/Take Profit</p>
-        </div>
-        
-        <div class="control-buttons">
-            <button class="btn btn-start" onclick="startBot()">Iniciar Bot</button>
-            <button class="btn btn-stop" onclick="stopBot()">Parar Bot</button>
-            <button class="btn btn-refresh" onclick="refreshStatus()">Atualizar</button>
-            <button class="btn btn-close" onclick="forceClose()">Fechar Posição</button>
-        </div>
-        
-        <div class="status-grid">
-            <div class="card">
-                <h3>Status do Sistema</h3>
-                <div id="bot-status">
-                    <span class="status-indicator" id="status-indicator"></span>
-                    <span id="status-text">Carregando...</span>
-                </div>
-                <div style="margin-top: 15px;">
-                    <div class="info-label">Última Atualização:</div>
-                    <div class="info-value" id="last-update">-</div>
-                </div>
-            </div>
-            
-            <div class="card">
-                <h3>Posição Atual</h3>
-                <div class="position-info">
-                    <div class="info-item">
-                        <div class="info-label">Posição</div>
-                        <div class="info-value" id="current-position">-</div>
-                    </div>
-                    <div class="info-item">
-                        <div class="info-label">Preço Entrada</div>
-                        <div class="info-value" id="entry-price">-</div>
-                    </div>
-                    <div class="info-item">
-                        <div class="info-label">Duração</div>
-                        <div class="info-value" id="position-duration">-</div>
-                    </div>
-                </div>
-            </div>
-            
-            <div class="card">
-                <h3>Performance</h3>
-                <div class="position-info">
-                    <div class="info-item">
-                        <div class="info-label">Preço Atual</div>
-                        <div class="info-value" id="current-price">-</div>
-                    </div>
-                    <div class="info-item">
-                        <div class="info-label">P&L (%)</div>
-                        <div class="info-value" id="pnl">-</div>
-                    </div>
-                </div>
-            </div>
-            
-            <div class="card">
-                <h3>Estatísticas de Trading</h3>
-                <div class="stats-grid">
-                    <div class="stat-item">
-                        <div class="info-label">Total Trades</div>
-                        <div class="info-value" id="total-trades">0</div>
-                    </div>
-                    <div class="stat-item">
-                        <div class="info-label">Sucessos</div>
-                        <div class="info-value" id="successful-trades">0</div>
-                    </div>
-                    <div class="stat-item">
-                        <div class="info-label">Win Rate</div>
-                        <div class="info-value" id="win-rate">0%</div>
-                    </div>
-                </div>
-            </div>
-        </div>
-        
-        <div class="card">
-            <h3>Logs do Sistema</h3>
-            <div class="logs" id="system-logs">Sistema iniciado. Bot de reversão contínua pronto para trading...</div>
-        </div>
-        
-        <div id="error-container"></div>
-    </div>
+        conn.commit()
+        conn.close()
     
-    <script>
-        let logMessages = [];
+    def load_state(self):
+        """Carrega o estado atual da conta"""
+        conn = sqlite3.connect(DB_PATH)
+        cursor = conn.cursor()
+        cursor.execute('SELECT * FROM account_state WHERE id = 1')
+        state = cursor.fetchone()
+        conn.close()
         
-        function addLog(message) {
-            const timestamp = new Date().toLocaleTimeString();
-            logMessages.push(`[${timestamp}] ${message}`);
-            if (logMessages.length > 100) {
-                logMessages.shift();
+        if state and state[2] == 1:  # position_open
+            self.current_position = {
+                'price': state[3],
+                'quantity': state[4],
+                'value': state[5]
             }
-            document.getElementById('system-logs').innerHTML = logMessages.join('\\n');
-            document.getElementById('system-logs').scrollTop = document.getElementById('system-logs').scrollHeight;
+    
+    def get_balance(self) -> float:
+        """Retorna o saldo atual"""
+        conn = sqlite3.connect(DB_PATH)
+        cursor = conn.cursor()
+        cursor.execute('SELECT balance FROM account_state WHERE id = 1')
+        balance = cursor.fetchone()[0]
+        conn.close()
+        return balance
+    
+    def update_peak_balance(self, current_balance: float):
+        """Atualiza o pico de saldo se necessário"""
+        conn = sqlite3.connect(DB_PATH)
+        cursor = conn.cursor()
+        cursor.execute('SELECT peak_balance FROM account_state WHERE id = 1')
+        peak = cursor.fetchone()[0]
+        
+        if current_balance > peak:
+            cursor.execute('UPDATE account_state SET peak_balance = ? WHERE id = 1', (current_balance,))
+            conn.commit()
+        conn.close()
+    
+    def open_long(self, price: float, timestamp: str) -> Dict:
+        """Abre uma posição LONG com 100% do saldo"""
+        if self.current_position:
+            return {'status': 'error', 'message': 'Posição já está aberta'}
+        
+        balance = self.get_balance()
+        commission = balance * COMMISSION_RATE
+        available_for_trade = balance - commission
+        quantity = available_for_trade / price
+        
+        conn = sqlite3.connect(DB_PATH)
+        cursor = conn.cursor()
+        
+        # Registra o trade
+        cursor.execute('''
+            INSERT INTO trades 
+            (action, price, quantity, total_value, commission, balance_after, timestamp)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+        ''', ('BUY', price, quantity, available_for_trade, commission, 0, timestamp))
+        
+        # Atualiza estado da conta
+        cursor.execute('''
+            UPDATE account_state 
+            SET position_open = 1, 
+                position_price = ?,
+                position_quantity = ?,
+                position_value = ?,
+                balance = 0,
+                last_updated = ?
+            WHERE id = 1
+        ''', (price, quantity, available_for_trade, timestamp))
+        
+        conn.commit()
+        conn.close()
+        
+        self.current_position = {
+            'price': price,
+            'quantity': quantity,
+            'value': available_for_trade
         }
         
-        async function startBot() {
-            try {
-                addLog('🚀 Iniciando bot de reversão contínua...');
-                const response = await fetch('/start');
-                const data = await response.json();
-                addLog(`✅ ${data.message}`);
-                setTimeout(refreshStatus, 2000);
-            } catch (error) {
-                addLog(`❌ Erro ao iniciar bot: ${error.message}`);
-            }
+        return {
+            'status': 'success',
+            'action': 'BUY',
+            'price': price,
+            'quantity': quantity,
+            'commission': commission,
+            'investment': available_for_trade
         }
+    
+    def close_long(self, price: float, timestamp: str) -> Dict:
+        """Fecha a posição LONG"""
+        if not self.current_position:
+            return {'status': 'error', 'message': 'Nenhuma posição aberta'}
         
-        async function stopBot() {
-            try {
-                addLog('⏹️ Parando bot...');
-                const response = await fetch('/stop');
-                const data = await response.json();
-                addLog(`✅ ${data.message}`);
-                setTimeout(refreshStatus, 2000);
-            } catch (error) {
-                addLog(`❌ Erro ao parar bot: ${error.message}`);
-            }
+        # Calcula o valor bruto da venda
+        gross_value = self.current_position['quantity'] * price
+        commission = gross_value * COMMISSION_RATE
+        net_value = gross_value - commission
+        
+        # Calcula lucro/prejuízo
+        profit_loss = net_value - self.current_position['value']
+        
+        conn = sqlite3.connect(DB_PATH)
+        cursor = conn.cursor()
+        
+        # Registra o trade de fechamento
+        cursor.execute('''
+            INSERT INTO trades 
+            (action, price, quantity, total_value, commission, balance_after, profit_loss, timestamp)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        ''', ('SELL', price, self.current_position['quantity'], gross_value, commission, net_value, profit_loss, timestamp))
+        
+        # Atualiza estado da conta
+        cursor.execute('''
+            UPDATE account_state 
+            SET position_open = 0,
+                position_price = NULL,
+                position_quantity = NULL,
+                position_value = NULL,
+                balance = ?,
+                total_profit = total_profit + ?,
+                last_updated = ?
+            WHERE id = 1
+        ''', (net_value, profit_loss, timestamp))
+        
+        conn.commit()
+        conn.close()
+        
+        self.update_peak_balance(net_value)
+        self.current_position = None
+        
+        return {
+            'status': 'success',
+            'action': 'SELL',
+            'price': price,
+            'quantity': self.current_position['quantity'],
+            'gross_value': gross_value,
+            'commission': commission,
+            'net_value': net_value,
+            'profit_loss': profit_loss,
+            'profit_percentage': (profit_loss / self.current_position['value']) * 100
         }
+    
+    def get_statistics(self) -> Dict:
+        """Retorna estatísticas do trading"""
+        conn = sqlite3.connect(DB_PATH)
+        cursor = conn.cursor()
         
-        async function forceClose() {
-            try {
-                addLog('🔴 Forçando fechamento de posição...');
-                const response = await fetch('/force-close');
-                const data = await response.json();
-                if (data.error) {
-                    addLog(`⚠️ ${data.error}`);
-                } else {
-                    addLog(`✅ ${data.message}`);
-                }
-                setTimeout(refreshStatus, 2000);
-            } catch (error) {
-                addLog(`❌ Erro ao fechar posição: ${error.message}`);
-            }
+        # Estatísticas básicas
+        cursor.execute('SELECT COUNT(*) FROM trades WHERE action = "BUY"')
+        total_longs = cursor.fetchone()[0]
+        
+        cursor.execute('SELECT COUNT(*) FROM trades WHERE action = "SELL"')
+        total_closes = cursor.fetchone()[0]
+        
+        cursor.execute('SELECT total_profit FROM account_state WHERE id = 1')
+        total_profit = cursor.fetchone()[0]
+        
+        cursor.execute('SELECT balance, peak_balance FROM account_state WHERE id = 1')
+        balance, peak = cursor.fetchone()
+        
+        # Calcula drawdown máximo
+        max_drawdown = 0
+        if peak > 0:
+            max_drawdown = ((peak - balance) / peak) * 100 if balance < peak else 0
+        
+        # Taxa de vitória
+        cursor.execute('SELECT COUNT(*) FROM trades WHERE action = "SELL" AND profit_loss > 0')
+        winning_trades = cursor.fetchone()[0]
+        
+        win_rate = (winning_trades / total_closes * 100) if total_closes > 0 else 0
+        
+        # Últimos 10 trades
+        cursor.execute('''
+            SELECT action, price, quantity, profit_loss, timestamp 
+            FROM trades 
+            ORDER BY id DESC 
+            LIMIT 10
+        ''')
+        recent_trades = cursor.fetchall()
+        
+        conn.close()
+        
+        return {
+            'total_longs': total_longs,
+            'total_closes': total_closes,
+            'total_profit': round(total_profit, 2),
+            'current_balance': round(balance, 2),
+            'max_drawdown': round(max_drawdown, 2),
+            'win_rate': round(win_rate, 2),
+            'recent_trades': recent_trades,
+            'position_open': self.current_position is not None
         }
-        
-        async function refreshStatus() {
-            try {
-                const response = await fetch('/status');
-                
-                if (!response.ok) {
-                    throw new Error(`HTTP ${response.status}: ${response.statusText}`);
-                }
-                
-                const status = await response.json();
-                
-                // Atualizar indicador de status
-                const indicator = document.getElementById('status-indicator');
-                const statusText = document.getElementById('status-text');
-                
-                if (status.running) {
-                    indicator.className = 'status-indicator status-running';
-                    statusText.textContent = 'Bot Ativo - Reversão Contínua';
-                } else {
-                    indicator.className = 'status-indicator status-stopped';
-                    statusText.textContent = 'Bot Parado';
-                }
-                
-                // Atualizar informações básicas
-                document.getElementById('last-update').textContent = status.last_update || '-';
-                document.getElementById('entry-price').textContent = status.entry_price ? `${parseFloat(status.entry_price).toFixed(4)}` : '-';
-                document.getElementById('current-price').textContent = status.current_price ? `${parseFloat(status.current_price).toFixed(4)}` : '-';
-                
-                // Atualizar posição
-                const positionElement = document.getElementById('current-position');
-                if (status.current_position) {
-                    positionElement.textContent = status.current_position.toUpperCase();
-                    positionElement.className = `info-value position-${status.current_position}`;
-                } else {
-                    positionElement.textContent = 'Nenhuma';
-                    positionElement.className = 'info-value';
-                }
-                
-                // Atualizar duração
-                const durationElement = document.getElementById('position-duration');
-                if (status.position_duration > 0) {
-                    durationElement.textContent = `${status.position_duration} min`;
-                } else {
-                    durationElement.textContent = '-';
-                }
-                
-                // Atualizar P&L
-                const pnlElement = document.getElementById('pnl');
-                if (status.pnl !== undefined && status.pnl !== null && status.pnl !== 0) {
-                    const pnlValue = parseFloat(status.pnl);
-                    pnlElement.textContent = `${pnlValue > 0 ? '+' : ''}${pnlValue.toFixed(2)}%`;
-                    pnlElement.className = pnlValue > 0 ? 'info-value pnl-positive' : 'info-value pnl-negative';
-                } else {
-                    pnlElement.textContent = '-';
-                    pnlElement.className = 'info-value';
-                }
-                
-                // Atualizar estatísticas
-                document.getElementById('total-trades').textContent = status.total_trades || 0;
-                document.getElementById('successful-trades').textContent = status.successful_trades || 0;
-                
-                const winRateElement = document.getElementById('win-rate');
-                const winRate = status.win_rate || 0;
-                winRateElement.textContent = `${winRate.toFixed(1)}%`;
-                winRateElement.className = winRate >= 50 ? 'info-value win-rate-positive' : 'info-value win-rate-negative';
-                
-                // Mostrar erros
-                const errorContainer = document.getElementById('error-container');
-                if (status.error) {
-                    errorContainer.innerHTML = `<div class="error-message"><strong>Erro:</strong> ${status.error}</div>`;
-                    addLog(`❌ Erro: ${status.error}`);
-                } else {
-                    errorContainer.innerHTML = '';
-                }
-                
-                // Log apenas de trades importantes
-                if (status.total_trades && status.total_trades !== window.lastTradeCount) {
-                    addLog(`🎯 Novo trade executado! Total: ${status.total_trades}`);
-                    window.lastTradeCount = status.total_trades;
-                }
-                
-            } catch (error) {
-                addLog(`❌ Erro ao atualizar status: ${error.message}`);
-                console.error('Erro detalhado:', error);
-            }
-        }
-        
-        // Atualizar status automaticamente a cada 15 segundos
-        setInterval(refreshStatus, 15000);
-        
-        // Carregar status inicial
-        refreshStatus();
-        
-        // Logs iniciais
-        addLog('🤖 Interface carregada - Estratégia de reversão contínua ativa');
-        addLog('🔄 Supertrend como decisor principal');
-        addLog('✅ AlgoAlpha + MFI + ATR como confirmação');
-        addLog('🚫 SEM stop loss ou take profit - apenas reversões');
-        addLog('⚡ Threshold: 3 pontos | Cooldown: 60s | Timeframe: 3m');
-        addLog('🎯 Pronto para detectar sinais e executar reversões!');
-    </script>
-</body>
-</html>
-'''
 
-@app.route('/')
-def home():
-    """Página inicial com interface de reversão contínua"""
-    return render_template_string(HTML_TEMPLATE)
+# Instância global do simulador
+simulator = TradeSimulator()
 
-@app.route('/status')
-def status():
-    """Endpoint para verificar o status do bot"""
+@app.route('/webhook', methods=['POST'])
+def webhook():
+    """Endpoint para receber sinais do TradingView"""
     try:
-        # Sempre tentar obter preço atual
-        if not bot_status.get('current_price'):
-            current_price = get_current_price()
-            if current_price:
-                bot_status['current_price'] = current_price
+        data = request.json
         
-        # Garantir que todos os campos existam
-        response_data = {
-            'running': bool(bot_status.get('running', False)),
-            'last_update': bot_status.get('last_update'),
-            'current_position': bot_status.get('current_position'),
-            'error': bot_status.get('error'),
-            'pnl': float(bot_status.get('pnl', 0.0)),
-            'entry_price': float(bot_status.get('entry_price', 0)) if bot_status.get('entry_price') else None,
-            'current_price': float(bot_status.get('current_price', 0)) if bot_status.get('current_price') else None,
-            'signal_strength': int(bot_status.get('signal_strength', 0)),
-            'position_duration': float(bot_status.get('position_duration', 0)),
-            'trades_today': int(bot_status.get('trades_today', 0)),
-            'total_trades': int(bot_status.get('total_trades', 0)),
-            'successful_trades': int(bot_status.get('successful_trades', 0)),
-            'win_rate': float(bot_status.get('win_rate', 0.0))
-        }
+        # Extrai informações do sinal
+        action = data.get('data', {}).get('action', '').lower()
+        price = float(data.get('price', 0))
+        timestamp = data.get('time', datetime.now().isoformat())
         
-        return jsonify(response_data)
+        if not action or not price:
+            return jsonify({'status': 'error', 'message': 'Dados inválidos'}), 400
+        
+        # Processa a ação
+        if action == 'buy':
+            result = simulator.open_long(price, timestamp)
+        elif action == 'sell':
+            result = simulator.close_long(price, timestamp)
+        else:
+            return jsonify({'status': 'error', 'message': f'Ação desconhecida: {action}'}), 400
+        
+        return jsonify(result), 200
+        
     except Exception as e:
-        print(f"Erro no endpoint /status: {e}")
-        return jsonify({
-            'running': False,
-            'error': f'Erro interno: {str(e)}',
-            'last_update': None,
-            'current_position': None,
-            'pnl': 0.0,
-            'entry_price': None,
-            'current_price': None,
-            'signal_strength': 0,
-            'position_duration': 0,
-            'trades_today': 0,
-            'total_trades': 0,
-            'successful_trades': 0,
-            'win_rate': 0.0
-        })
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+
+@app.route('/dashboard')
+def dashboard():
+    """Renderiza o dashboard"""
+    return render_template('index.html')
+
+@app.route('/api/stats')
+def api_stats():
+    """API para obter estatísticas em tempo real"""
+    stats = simulator.get_statistics()
+    return jsonify(stats)
+
+@app.route('/ping')
+def ping():
+    """Endpoint de ping para manter o serviço ativo"""
+    return jsonify({
+        'status': 'alive',
+        'timestamp': datetime.now().isoformat(),
+        'uptime': 'running'
+    })
 
 @app.route('/health')
 def health():
     """Health check para o Render"""
-    return jsonify({
-        'status': 'healthy',
-        'timestamp': time.strftime('%Y-%m-%d %H:%M:%S'),
-        'strategy': 'continuous_reversal',
-        'indicators': 'supertrend_primary_algoalpha_mfi_atr_confirmation',
-        'no_stop_loss': True,
-        'no_take_profit': True
-    })
+    return jsonify({'status': 'healthy'}), 200
 
-@app.route('/start')
-def start_bot():
-    """Inicia o bot manualmente"""
-    global bot_thread, bot_status
+def self_ping():
+    """Função que faz auto-ping para manter o serviço ativo"""
+    # Aguarda 2 minutos antes de começar (para o app inicializar)
+    time.sleep(120)
     
-    if not bot_status['running']:
-        bot_thread = threading.Thread(target=run_bot, daemon=True)
-        bot_thread.start()
-        return jsonify({'message': 'Bot iniciado - Estratégia de Reversão Contínua!'})
-    else:
-        return jsonify({'message': 'Bot já está rodando'})
-
-@app.route('/stop')
-def stop_bot():
-    """Para o bot manualmente"""
-    global bot_status
-    
-    if bot_status['running']:
-        bot_status['running'] = False
-        return jsonify({'message': 'Comando de parada enviado'})
-    else:
-        return jsonify({'message': 'Bot já está parado'})
-
-@app.route('/position')
-def get_position():
-    """Retorna informações da posição atual"""
-    if trading_bot:
+    while True:
         try:
-            position_info = trading_bot.get_position_info()
-            return jsonify({
-                'current_position': trading_bot.current_position,
-                'entry_price': trading_bot.entry_price,
-                'position_size': trading_bot.position_size,
-                'position_duration': bot_status.get('position_duration', 0),
-                'exchange_position': position_info,
-                'total_trades': trading_bot.total_trades,
-                'successful_trades': trading_bot.successful_trades
-            })
+            # Tenta descobrir a URL do próprio serviço
+            # No Render, use a variável de ambiente RENDER_EXTERNAL_URL
+            import os
+            base_url = os.environ.get('RENDER_EXTERNAL_URL', 'http://localhost:5000')
+            
+            response = requests.get(f'{base_url}/ping', timeout=10)
+            print(f'[SELF-PING] Status: {response.status_code} - {datetime.now()}')
         except Exception as e:
-            return jsonify({'error': str(e)})
-    else:
-        return jsonify({'error': 'Bot não inicializado'})
+            print(f'[SELF-PING ERROR] {e}')
+        
+        time.sleep(SELF_PING_INTERVAL)
 
-@app.route('/force-close')
-def force_close():
-    """Força o fechamento da posição atual (apenas manual via interface)"""
-    if trading_bot and trading_bot.current_position:
-        try:
-            success = trading_bot.close_position()
-            if success:
-                return jsonify({'message': 'Posição fechada manualmente! AVISO: Bot continuará operando normalmente.'})
-            else:
-                return jsonify({'error': 'Falha ao fechar posição'})
-        except Exception as e:
-            return jsonify({'error': str(e)})
-    else:
-        return jsonify({'error': 'Nenhuma posição ativa ou bot não inicializado'})
+# Inicia thread de auto-ping
+ping_thread = threading.Thread(target=self_ping, daemon=True)
+ping_thread.start()
 
 if __name__ == '__main__':
-    # Não iniciar o bot automaticamente
-    # Deixar para o usuário decidir via interface
-    
-    # Iniciar o servidor Flask
+    import os
     port = int(os.environ.get('PORT', 5000))
     app.run(host='0.0.0.0', port=port, debug=False)
