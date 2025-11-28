@@ -4,17 +4,22 @@ import sqlite3
 import threading
 import time
 import requests
+import os
 from datetime import datetime
 from typing import Optional, Dict, List
 
 app = Flask(__name__)
 
 # Configurações
-INITIAL_BALANCE = 100.0
+INITIAL_BALANCE = 55.0  # Saldo inicial de $55 USDT
 COMMISSION_RATE = 0.0005  # 0.05%
-DB_PATH = '/opt/render/project/src/data/trading.db'  # Caminho para Volume Disk no Render
+DB_DIR = '/opt/render/project/src/data'
+DB_PATH = os.path.join(DB_DIR, 'trading.db')
 SELF_PING_INTERVAL = 600  # 10 minutos
 TRADING_PAIR = "ETH/USDT"
+
+# Criar diretório se não existir
+os.makedirs(DB_DIR, exist_ok=True)
 
 class TradeSimulator:
     def __init__(self):
@@ -219,13 +224,16 @@ class TradeSimulator:
         total_longs = cursor.fetchone()[0]
         
         cursor.execute('SELECT COUNT(*) FROM trades WHERE action = "SELL"')
-        total_closes = cursor.fetchone()[0]
+        total_shorts = cursor.fetchone()[0]
         
         cursor.execute('SELECT total_profit FROM account_state WHERE id = 1')
         total_profit = cursor.fetchone()[0]
         
         cursor.execute('SELECT balance, peak_balance FROM account_state WHERE id = 1')
         balance, peak = cursor.fetchone()
+        
+        # Calcula lucro/perda em porcentagem
+        profit_percentage = ((balance - INITIAL_BALANCE) / INITIAL_BALANCE) * 100
         
         # Calcula drawdown máximo
         max_drawdown = 0
@@ -236,7 +244,7 @@ class TradeSimulator:
         cursor.execute('SELECT COUNT(*) FROM trades WHERE action = "SELL" AND profit_loss > 0')
         winning_trades = cursor.fetchone()[0]
         
-        win_rate = (winning_trades / total_closes * 100) if total_closes > 0 else 0
+        win_rate = (winning_trades / total_shorts * 100) if total_shorts > 0 else 0
         
         # Últimos 10 trades
         cursor.execute('''
@@ -251,9 +259,11 @@ class TradeSimulator:
         
         return {
             'total_longs': total_longs,
-            'total_closes': total_closes,
-            'total_profit': round(total_profit, 2),
+            'total_shorts': total_shorts,
+            'total_profit_usd': round(total_profit, 2),
+            'total_profit_percentage': round(profit_percentage, 2),
             'current_balance': round(balance, 2),
+            'initial_balance': INITIAL_BALANCE,
             'max_drawdown': round(max_drawdown, 2),
             'win_rate': round(win_rate, 2),
             'recent_trades': recent_trades,
