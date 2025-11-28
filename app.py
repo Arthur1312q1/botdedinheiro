@@ -13,13 +13,21 @@ app = Flask(__name__)
 # Configurações
 INITIAL_BALANCE = 55.0  # Saldo inicial de $55 USDT
 COMMISSION_RATE = 0.0005  # 0.05%
-DB_DIR = '/opt/render/project/src/data'
+
+# Tentar usar Volume Disk, se não existir usar local
+if os.path.exists('/opt/render/project/src/data'):
+    DB_DIR = '/opt/render/project/src/data'
+else:
+    DB_DIR = os.path.join(os.getcwd(), 'data')
+
 DB_PATH = os.path.join(DB_DIR, 'trading.db')
 SELF_PING_INTERVAL = 600  # 10 minutos
 TRADING_PAIR = "ETH/USDT"
 
 # Criar diretório se não existir
 os.makedirs(DB_DIR, exist_ok=True)
+print(f"[INFO] Database path: {DB_PATH}")
+print(f"[INFO] Directory exists: {os.path.exists(DB_DIR)}")
 
 class TradeSimulator:
     def __init__(self):
@@ -299,6 +307,12 @@ def webhook():
         
     except Exception as e:
         return jsonify({'status': 'error', 'message': str(e)}), 500
+
+@app.route('/')
+def index():
+    """Redireciona para o dashboard"""
+    from flask import redirect
+    return redirect('/dashboard')
 
 @app.route('/dashboard')
 def dashboard():
