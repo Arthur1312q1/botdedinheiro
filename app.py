@@ -10,6 +10,14 @@ from typing import Optional, Dict, List
 
 app = Flask(__name__)
 
+# Adiciona CORS headers para todas as respostas
+@app.after_request
+def after_request(response):
+    response.headers.add('Access-Control-Allow-Origin', '*')
+    response.headers.add('Access-Control-Allow-Headers', 'Content-Type')
+    response.headers.add('Access-Control-Allow-Methods', 'GET,POST,OPTIONS')
+    return response
+
 # Configurações
 INITIAL_BALANCE = 55.0  # Saldo inicial de $55 USDT
 COMMISSION_RATE = 0.0005  # 0.05%
@@ -37,50 +45,69 @@ class TradeSimulator:
     
     def init_database(self):
         """Inicializa o banco de dados SQLite"""
-        conn = sqlite3.connect(DB_PATH)
-        cursor = conn.cursor()
-        
-        # Tabela de trades
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS trades (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                action TEXT NOT NULL,
-                price REAL NOT NULL,
-                quantity REAL NOT NULL,
-                total_value REAL NOT NULL,
-                commission REAL NOT NULL,
-                balance_after REAL NOT NULL,
-                profit_loss REAL DEFAULT 0,
-                timestamp TEXT NOT NULL
-            )
-        ''')
-        
-        # Tabela de estado da conta
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS account_state (
-                id INTEGER PRIMARY KEY CHECK (id = 1),
-                balance REAL NOT NULL,
-                position_open INTEGER DEFAULT 0,
-                position_price REAL,
-                position_quantity REAL,
-                position_value REAL,
-                total_profit REAL DEFAULT 0,
-                peak_balance REAL NOT NULL,
-                last_updated TEXT NOT NULL
-            )
-        ''')
-        
-        # Inicializa estado se não existir
-        cursor.execute('SELECT COUNT(*) FROM account_state')
-        if cursor.fetchone()[0] == 0:
+        try:
+            print(f"[INIT_DB] Tentando conectar ao banco: {DB_PATH}")
+            conn = sqlite3.connect(DB_PATH, timeout=10.0)
+            cursor = conn.cursor()
+            
+            # Tabela de trades
             cursor.execute('''
-                INSERT INTO account_state 
-                (id, balance, peak_balance, last_updated) 
-                VALUES (1, ?, ?, ?)
-            ''', (INITIAL_BALANCE, INITIAL_BALANCE, datetime.now().isoformat()))
-        
-        conn.commit()
-        conn.close()
+                CREATE TABLE IF NOT EXISTS trades (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    action TEXT NOT NULL,
+                    price REAL NOT NULL,
+                    quantity REAL NOT NULL,
+                    total_value REAL NOT NULL,
+                    commission REAL NOT NULL,
+                    balance_after REAL NOT NULL,
+                    profit_loss REAL DEFAULT 0,
+                    timestamp TEXT NOT NULL
+                )
+            ''')
+            
+            # Tabela de estado da conta
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS account_state (
+                    id INTEGER PRIMARY KEY CHECK (id = 1),
+                    balance REAL NOT NULL,
+                    position_open INTEGER DEFAULT 0,
+                    position_price REAL,
+                    position_quantity REAL,
+                    position_value REAL,
+                    total_profit REAL DEFAULT 0,
+                    peak_balance REAL NOT NULL,
+                    last_updated TEXT NOT NULL
+                )
+            ''')
+            
+            # Inicializa estado se não existir
+            cursor.execute('SELECT COUNT(*) FROM account_state')
+            if cursor.fetchone()[0] == 0:
+                print(f"[INIT_DB] Criando estado inicial com saldo ${INITIAL_BALANCE}")
+                cursor.execute('''
+                    INSERT INTO account_state 
+                    (id, balance, peak_balance, last_updated) 
+                    VALUES (1, ?, ?, ?)
+                ''', (INITIAL_BALANCE, INITIAL_BALANCE, datetime.now().isoformat()))
+            else:
+                # Verifica estado atual
+                cursor.execute('SELECT balance, position_open FROM account_state WHERE id = 1')
+                balance, position_open = cursor.fetchone()
+                print(f"[INIT_DB] Estado existente - Saldo: ${balance}, Posição aberta: {position_open}")
+            
+            # Conta total de trades
+            cursor.execute('SELECT COUNT(*) FROM trades')
+            total_trades = cursor.fetchone()[0]
+            print(f"[INIT_DB] Total de trades no banco: {total_trades}")
+            
+            conn.commit()
+            conn.close()
+            print("[INIT_DB] Banco de dados inicializado com sucesso!")
+            
+        except Exception as e:
+            print(f"[INIT_DB] ERRO ao inicializar banco: {str(e)}")
+            import traceback
+            traceback.print_exc()
     
     def load_state(self):
         """Carrega o estado atual da conta"""
