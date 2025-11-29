@@ -286,26 +286,60 @@ def webhook():
     """Endpoint para receber sinais do TradingView"""
     try:
         data = request.json
+        print(f"[WEBHOOK] Recebido: {data}")
         
-        # Extrai informações do sinal
-        action = data.get('data', {}).get('action', '').lower()
-        price = float(data.get('price', 0))
+        # Validação básica
+        if not data:
+            print("[WEBHOOK] Erro: Dados vazios")
+            return jsonify({'status': 'error', 'message': 'Dados vazios'}), 400
+        
+        # Extrai informações do sinal - com fallbacks
+        action = None
+        price = None
+        
+        # Tenta extrair action de diferentes formatos
+        if 'data' in data and isinstance(data['data'], dict):
+            action = data['data'].get('action', '').lower()
+        elif 'action' in data:
+            action = data['action'].lower()
+        
+        # Tenta extrair price de diferentes formatos
+        if 'price' in data:
+            try:
+                price = float(data['price'])
+            except (ValueError, TypeError):
+                price = None
+        
         timestamp = data.get('time', datetime.now().isoformat())
         
-        if not action or not price:
-            return jsonify({'status': 'error', 'message': 'Dados inválidos'}), 400
+        print(f"[WEBHOOK] Processando - Action: {action}, Price: {price}")
+        
+        # Validação
+        if not action:
+            print("[WEBHOOK] Erro: Action não encontrado")
+            return jsonify({'status': 'error', 'message': 'Action não encontrado nos dados'}), 400
+        
+        if not price or price <= 0:
+            print("[WEBHOOK] Erro: Price inválido")
+            return jsonify({'status': 'error', 'message': 'Price inválido ou não encontrado'}), 400
         
         # Processa a ação
         if action == 'buy':
             result = simulator.open_long(price, timestamp)
+            print(f"[TRADE] LONG aberto - Preço: ${price}, Resultado: {result}")
         elif action == 'sell':
             result = simulator.close_long(price, timestamp)
+            print(f"[TRADE] LONG fechado - Preço: ${price}, Resultado: {result}")
         else:
+            print(f"[WEBHOOK] Erro: Ação desconhecida: {action}")
             return jsonify({'status': 'error', 'message': f'Ação desconhecida: {action}'}), 400
         
         return jsonify(result), 200
         
     except Exception as e:
+        print(f"[WEBHOOK] Erro crítico: {str(e)}")
+        import traceback
+        traceback.print_exc()
         return jsonify({'status': 'error', 'message': str(e)}), 500
 
 @app.route('/')
