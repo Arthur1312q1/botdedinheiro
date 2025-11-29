@@ -173,13 +173,17 @@ class TradeSimulator:
         if not self.current_position:
             return {'status': 'error', 'message': 'Nenhuma posição aberta'}
         
+        # Salva dados da posição antes de limpar
+        position_quantity = self.current_position['quantity']
+        position_value = self.current_position['value']
+        
         # Calcula o valor bruto da venda
-        gross_value = self.current_position['quantity'] * price
+        gross_value = position_quantity * price
         commission = gross_value * COMMISSION_RATE
         net_value = gross_value - commission
         
         # Calcula lucro/prejuízo
-        profit_loss = net_value - self.current_position['value']
+        profit_loss = net_value - position_value
         
         conn = sqlite3.connect(DB_PATH)
         cursor = conn.cursor()
@@ -189,7 +193,7 @@ class TradeSimulator:
             INSERT INTO trades 
             (action, price, quantity, total_value, commission, balance_after, profit_loss, timestamp)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-        ''', ('SELL', price, self.current_position['quantity'], gross_value, commission, net_value, profit_loss, timestamp))
+        ''', ('SELL', price, position_quantity, gross_value, commission, net_value, profit_loss, timestamp))
         
         # Atualiza estado da conta
         cursor.execute('''
@@ -208,19 +212,24 @@ class TradeSimulator:
         conn.close()
         
         self.update_peak_balance(net_value)
-        self.current_position = None
         
-        return {
+        # Prepara resultado antes de limpar a posição
+        result = {
             'status': 'success',
             'action': 'SELL',
             'price': price,
-            'quantity': self.current_position['quantity'],
+            'quantity': position_quantity,
             'gross_value': gross_value,
             'commission': commission,
             'net_value': net_value,
             'profit_loss': profit_loss,
-            'profit_percentage': (profit_loss / self.current_position['value']) * 100
+            'profit_percentage': (profit_loss / position_value) * 100
         }
+        
+        # Limpa a posição atual
+        self.current_position = None
+        
+        return result
     
     def get_statistics(self) -> Dict:
         """Retorna estatísticas do trading"""
