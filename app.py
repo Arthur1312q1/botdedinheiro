@@ -233,59 +233,86 @@ class TradeSimulator:
     
     def get_statistics(self) -> Dict:
         """Retorna estatísticas do trading"""
-        conn = sqlite3.connect(DB_PATH)
-        cursor = conn.cursor()
-        
-        # Estatísticas básicas
-        cursor.execute('SELECT COUNT(*) FROM trades WHERE action = "BUY"')
-        total_longs = cursor.fetchone()[0]
-        
-        cursor.execute('SELECT COUNT(*) FROM trades WHERE action = "SELL"')
-        total_shorts = cursor.fetchone()[0]
-        
-        cursor.execute('SELECT total_profit FROM account_state WHERE id = 1')
-        total_profit = cursor.fetchone()[0]
-        
-        cursor.execute('SELECT balance, peak_balance FROM account_state WHERE id = 1')
-        balance, peak = cursor.fetchone()
-        
-        # Calcula lucro/perda em porcentagem
-        profit_percentage = ((balance - INITIAL_BALANCE) / INITIAL_BALANCE) * 100
-        
-        # Calcula drawdown máximo
-        max_drawdown = 0
-        if peak > 0:
-            max_drawdown = ((peak - balance) / peak) * 100 if balance < peak else 0
-        
-        # Taxa de vitória
-        cursor.execute('SELECT COUNT(*) FROM trades WHERE action = "SELL" AND profit_loss > 0')
-        winning_trades = cursor.fetchone()[0]
-        
-        win_rate = (winning_trades / total_shorts * 100) if total_shorts > 0 else 0
-        
-        # Últimos 10 trades
-        cursor.execute('''
-            SELECT action, price, quantity, profit_loss, timestamp 
-            FROM trades 
-            ORDER BY id DESC 
-            LIMIT 10
-        ''')
-        recent_trades = cursor.fetchall()
-        
-        conn.close()
-        
-        return {
-            'total_longs': total_longs,
-            'total_shorts': total_shorts,
-            'total_profit_usd': round(total_profit, 2),
-            'total_profit_percentage': round(profit_percentage, 2),
-            'current_balance': round(balance, 2),
-            'initial_balance': INITIAL_BALANCE,
-            'max_drawdown': round(max_drawdown, 2),
-            'win_rate': round(win_rate, 2),
-            'recent_trades': recent_trades,
-            'position_open': self.current_position is not None
-        }
+        try:
+            conn = sqlite3.connect(DB_PATH, timeout=10.0)
+            cursor = conn.cursor()
+            
+            # Estatísticas básicas
+            cursor.execute('SELECT COUNT(*) FROM trades WHERE action = "BUY"')
+            total_longs = cursor.fetchone()[0]
+            
+            cursor.execute('SELECT COUNT(*) FROM trades WHERE action = "SELL"')
+            total_shorts = cursor.fetchone()[0]
+            
+            cursor.execute('SELECT total_profit FROM account_state WHERE id = 1')
+            result = cursor.fetchone()
+            total_profit = result[0] if result else 0
+            
+            cursor.execute('SELECT balance, peak_balance FROM account_state WHERE id = 1')
+            result = cursor.fetchone()
+            if result:
+                balance, peak = result
+            else:
+                balance, peak = INITIAL_BALANCE, INITIAL_BALANCE
+            
+            # Calcula lucro/perda em porcentagem
+            profit_percentage = ((balance - INITIAL_BALANCE) / INITIAL_BALANCE) * 100
+            
+            # Calcula drawdown máximo
+            max_drawdown = 0
+            if peak > 0:
+                max_drawdown = ((peak - balance) / peak) * 100 if balance < peak else 0
+            
+            # Taxa de vitória
+            cursor.execute('SELECT COUNT(*) FROM trades WHERE action = "SELL" AND profit_loss > 0')
+            winning_trades = cursor.fetchone()[0]
+            
+            win_rate = (winning_trades / total_shorts * 100) if total_shorts > 0 else 0
+            
+            # Últimos 10 trades
+            cursor.execute('''
+                SELECT action, price, quantity, profit_loss, timestamp 
+                FROM trades 
+                ORDER BY id DESC 
+                LIMIT 10
+            ''')
+            recent_trades = cursor.fetchall()
+            
+            conn.close()
+            
+            stats = {
+                'total_longs': total_longs,
+                'total_shorts': total_shorts,
+                'total_profit_usd': round(total_profit, 2),
+                'total_profit_percentage': round(profit_percentage, 2),
+                'current_balance': round(balance, 2),
+                'initial_balance': INITIAL_BALANCE,
+                'max_drawdown': round(max_drawdown, 2),
+                'win_rate': round(win_rate, 2),
+                'recent_trades': recent_trades,
+                'position_open': self.current_position is not None
+            }
+            
+            print(f"[GET_STATISTICS] Stats calculados: Longs={total_longs}, Shorts={total_shorts}, Balance={balance}")
+            return stats
+            
+        except Exception as e:
+            print(f"[GET_STATISTICS] Erro: {str(e)}")
+            import traceback
+            traceback.print_exc()
+            # Retorna valores padrão em caso de erro
+            return {
+                'total_longs': 0,
+                'total_shorts': 0,
+                'total_profit_usd': 0.0,
+                'total_profit_percentage': 0.0,
+                'current_balance': INITIAL_BALANCE,
+                'initial_balance': INITIAL_BALANCE,
+                'max_drawdown': 0.0,
+                'win_rate': 0.0,
+                'recent_trades': [],
+                'position_open': False
+            }
 
 # Instância global do simulador
 simulator = TradeSimulator()
@@ -365,8 +392,15 @@ def dashboard():
 @app.route('/api/stats')
 def api_stats():
     """API para obter estatísticas em tempo real"""
-    stats = simulator.get_statistics()
-    return jsonify(stats)
+    try:
+        stats = simulator.get_statistics()
+        print(f"[API STATS] Retornando: {stats}")
+        return jsonify(stats)
+    except Exception as e:
+        print(f"[API STATS] Erro: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({'error': str(e)}), 500
 
 @app.route('/ping')
 def ping():
