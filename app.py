@@ -41,6 +41,7 @@ class TradeSimulator:
     def __init__(self):
         self.init_database()
         self.current_position = None
+        self.position_type = None  # 'LONG' ou 'SHORT'
         self.load_state()
     
     def init_database(self):
@@ -55,6 +56,7 @@ class TradeSimulator:
                 CREATE TABLE IF NOT EXISTS trades (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     action TEXT NOT NULL,
+                    position_type TEXT NOT NULL,
                     price REAL NOT NULL,
                     quantity REAL NOT NULL,
                     total_value REAL NOT NULL,
@@ -71,6 +73,7 @@ class TradeSimulator:
                     id INTEGER PRIMARY KEY CHECK (id = 1),
                     balance REAL NOT NULL,
                     position_open INTEGER DEFAULT 0,
+                    position_type TEXT,
                     position_price REAL,
                     position_quantity REAL,
                     position_value REAL,
@@ -91,9 +94,12 @@ class TradeSimulator:
                 ''', (INITIAL_BALANCE, INITIAL_BALANCE, datetime.now().isoformat()))
             else:
                 # Verifica estado atual
-                cursor.execute('SELECT balance, position_open FROM account_state WHERE id = 1')
-                balance, position_open = cursor.fetchone()
-                print(f"[INIT_DB] Estado existente - Saldo: ${balance}, Posição aberta: {position_open}")
+                cursor.execute('SELECT balance, position_open, position_type FROM account_state WHERE id = 1')
+                result = cursor.fetchone()
+                balance = result[0]
+                position_open = result[1]
+                position_type = result[2] if len(result) > 2 else None
+                print(f"[INIT_DB] Estado existente - Saldo: ${balance}, Posição: {position_type if position_open else 'Fechada'}")
             
             # Conta total de trades
             cursor.execute('SELECT COUNT(*) FROM trades')
@@ -113,16 +119,21 @@ class TradeSimulator:
         """Carrega o estado atual da conta"""
         conn = sqlite3.connect(DB_PATH)
         cursor = conn.cursor()
-        cursor.execute('SELECT * FROM account_state WHERE id = 1')
+        cursor.execute('SELECT position_open, position_type, position_price, position_quantity, position_value FROM account_state WHERE id = 1')
         state = cursor.fetchone()
         conn.close()
         
-        if state and state[2] == 1:  # position_open
+        if state and state[0] == 1:  # position_open
             self.current_position = {
-                'price': state[3],
-                'quantity': state[4],
-                'value': state[5]
+                'price': state[2],
+                'quantity': state[3],
+                'value': state[4]
             }
+            self.position_type = state[1]
+            print(f"[LOAD_STATE] Posição {self.position_type} carregada - Preço: ${state[2]}")
+        else:
+            self.current_position = None
+            self.position_type = None
     
     def get_balance(self) -> float:
         """Retorna o saldo atual"""
@@ -146,9 +157,9 @@ class TradeSimulator:
         conn.close()
     
     def open_long(self, price: float, timestamp: str) -> Dict:
-        """Abre uma posição LONG com 100% do saldo"""
+        """Abre uma posição LONG (compra) com 100% do saldo"""
         if self.current_position:
-            return {'status': 'error', 'message': 'Posição já está aberta'}
+            return {'status': 'error', 'message': f'Já existe uma posição {self.position_type} aberta'}
         
         balance = self.get_balance()
         commission = balance * COMMISSION_RATE
@@ -161,14 +172,15 @@ class TradeSimulator:
         # Registra o trade
         cursor.execute('''
             INSERT INTO trades 
-            (action, price, quantity, total_value, commission, balance_after, timestamp)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-        ''', ('BUY', price, quantity, available_for_trade, commission, 0, timestamp))
+            (action, position_type, price, quantity, total_value, commission, balance_after, timestamp)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        ''', ('BUY', 'LONG', price, quantity, available_for_trade, commission, 0, timestamp))
         
         # Atualiza estado da conta
         cursor.execute('''
             UPDATE account_state 
-            SET position_open = 1, 
+            SET position_open = 1,
+                position_type = 'LONG',
                 position_price = ?,
                 position_quantity = ?,
                 position_value = ?,
@@ -185,10 +197,65 @@ class TradeSimulator:
             'quantity': quantity,
             'value': available_for_trade
         }
+        self.position_type = 'LONG'
         
         return {
             'status': 'success',
             'action': 'BUY',
+            'position_type': 'LONG',
+            'price': price,
+            'quantity': quantity,
+            'commission': commission,
+            'investment': available_for_trade
+        }
+    
+    def open_short(self, price: float, timestamp: str) -> Dict:
+        """Abre uma posição SHORT (venda a descoberto) com 100% do saldo"""
+        if self.current_position:
+            return {'status': 'error', 'message': f'Já existe uma posição {self.position_type} aberta'}
+        
+        balance = self.get_balance()
+        commission = balance * COMMISSION_RATE
+        available_for_trade = balance - commission
+        quantity = available_for_trade / price
+        
+        conn = sqlite3.connect(DB_PATH)
+        cursor = conn.cursor()
+        
+        # Registra o trade
+        cursor.execute('''
+            INSERT INTO trades 
+            (action, position_type, price, quantity, total_value, commission, balance_after, timestamp)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        ''', ('SELL', 'SHORT', price, quantity, available_for_trade, commission, 0, timestamp))
+        
+        # Atualiza estado da conta
+        cursor.execute('''
+            UPDATE account_state 
+            SET position_open = 1,
+                position_type = 'SHORT',
+                position_price = ?,
+                position_quantity = ?,
+                position_value = ?,
+                balance = 0,
+                last_updated = ?
+            WHERE id = 1
+        ''', (price, quantity, available_for_trade, timestamp))
+        
+        conn.commit()
+        conn.close()
+        
+        self.current_position = {
+            'price': price,
+            'quantity': quantity,
+            'value': available_for_trade
+        }
+        self.position_type = 'SHORT'
+        
+        return {
+            'status': 'success',
+            'action': 'SELL',
+            'position_type': 'SHORT',
             'price': price,
             'quantity': quantity,
             'commission': commission,
@@ -196,20 +263,21 @@ class TradeSimulator:
         }
     
     def close_long(self, price: float, timestamp: str) -> Dict:
-        """Fecha a posição LONG"""
-        if not self.current_position:
-            return {'status': 'error', 'message': 'Nenhuma posição aberta'}
+        """Fecha a posição LONG (vende)"""
+        if not self.current_position or self.position_type != 'LONG':
+            return {'status': 'error', 'message': 'Nenhuma posição LONG aberta'}
         
         # Salva dados da posição antes de limpar
         position_quantity = self.current_position['quantity']
         position_value = self.current_position['value']
+        entry_price = self.current_position['price']
         
         # Calcula o valor bruto da venda
         gross_value = position_quantity * price
         commission = gross_value * COMMISSION_RATE
         net_value = gross_value - commission
         
-        # Calcula lucro/prejuízo
+        # Calcula lucro/prejuízo (LONG: ganho quando preço sobe)
         profit_loss = net_value - position_value
         
         conn = sqlite3.connect(DB_PATH)
@@ -218,14 +286,15 @@ class TradeSimulator:
         # Registra o trade de fechamento
         cursor.execute('''
             INSERT INTO trades 
-            (action, price, quantity, total_value, commission, balance_after, profit_loss, timestamp)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-        ''', ('SELL', price, position_quantity, gross_value, commission, net_value, profit_loss, timestamp))
+            (action, position_type, price, quantity, total_value, commission, balance_after, profit_loss, timestamp)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ''', ('SELL', 'LONG', price, position_quantity, gross_value, commission, net_value, profit_loss, timestamp))
         
         # Atualiza estado da conta
         cursor.execute('''
             UPDATE account_state 
             SET position_open = 0,
+                position_type = NULL,
                 position_price = NULL,
                 position_quantity = NULL,
                 position_value = NULL,
@@ -244,7 +313,9 @@ class TradeSimulator:
         result = {
             'status': 'success',
             'action': 'SELL',
-            'price': price,
+            'position_type': 'LONG',
+            'entry_price': entry_price,
+            'exit_price': price,
             'quantity': position_quantity,
             'gross_value': gross_value,
             'commission': commission,
@@ -255,6 +326,76 @@ class TradeSimulator:
         
         # Limpa a posição atual
         self.current_position = None
+        self.position_type = None
+        
+        return result
+    
+    def close_short(self, price: float, timestamp: str) -> Dict:
+        """Fecha a posição SHORT (compra de volta)"""
+        if not self.current_position or self.position_type != 'SHORT':
+            return {'status': 'error', 'message': 'Nenhuma posição SHORT aberta'}
+        
+        # Salva dados da posição antes de limpar
+        position_quantity = self.current_position['quantity']
+        position_value = self.current_position['value']
+        entry_price = self.current_position['price']
+        
+        # Calcula o valor bruto da compra de volta
+        gross_value = position_quantity * price
+        commission = gross_value * COMMISSION_RATE
+        cost_to_close = gross_value + commission
+        
+        # Calcula lucro/prejuízo (SHORT: ganho quando preço cai)
+        profit_loss = position_value - cost_to_close
+        net_value = position_value + profit_loss
+        
+        conn = sqlite3.connect(DB_PATH)
+        cursor = conn.cursor()
+        
+        # Registra o trade de fechamento
+        cursor.execute('''
+            INSERT INTO trades 
+            (action, position_type, price, quantity, total_value, commission, balance_after, profit_loss, timestamp)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ''', ('BUY', 'SHORT', price, position_quantity, gross_value, commission, net_value, profit_loss, timestamp))
+        
+        # Atualiza estado da conta
+        cursor.execute('''
+            UPDATE account_state 
+            SET position_open = 0,
+                position_type = NULL,
+                position_price = NULL,
+                position_quantity = NULL,
+                position_value = NULL,
+                balance = ?,
+                total_profit = total_profit + ?,
+                last_updated = ?
+            WHERE id = 1
+        ''', (net_value, profit_loss, timestamp))
+        
+        conn.commit()
+        conn.close()
+        
+        self.update_peak_balance(net_value)
+        
+        # Prepara resultado antes de limpar a posição
+        result = {
+            'status': 'success',
+            'action': 'BUY',
+            'position_type': 'SHORT',
+            'entry_price': entry_price,
+            'exit_price': price,
+            'quantity': position_quantity,
+            'gross_value': gross_value,
+            'commission': commission,
+            'net_value': net_value,
+            'profit_loss': profit_loss,
+            'profit_percentage': (profit_loss / position_value) * 100
+        }
+        
+        # Limpa a posição atual
+        self.current_position = None
+        self.position_type = None
         
         return result
     
@@ -264,23 +405,28 @@ class TradeSimulator:
             conn = sqlite3.connect(DB_PATH, timeout=10.0)
             cursor = conn.cursor()
             
-            # Estatísticas básicas
-            cursor.execute('SELECT COUNT(*) FROM trades WHERE action = "BUY"')
+            # Total de LONGs abertos
+            cursor.execute('SELECT COUNT(*) FROM trades WHERE action = "BUY" AND position_type = "LONG"')
             total_longs = cursor.fetchone()[0]
             
-            cursor.execute('SELECT COUNT(*) FROM trades WHERE action = "SELL"')
+            # Total de SHORTs abertos
+            cursor.execute('SELECT COUNT(*) FROM trades WHERE action = "SELL" AND position_type = "SHORT"')
             total_shorts = cursor.fetchone()[0]
+            
+            # Total de posições fechadas
+            cursor.execute('SELECT COUNT(*) FROM trades WHERE profit_loss != 0')
+            total_closed = cursor.fetchone()[0]
             
             cursor.execute('SELECT total_profit FROM account_state WHERE id = 1')
             result = cursor.fetchone()
             total_profit = result[0] if result else 0
             
-            cursor.execute('SELECT balance, peak_balance FROM account_state WHERE id = 1')
+            cursor.execute('SELECT balance, peak_balance, position_open, position_type FROM account_state WHERE id = 1')
             result = cursor.fetchone()
             if result:
-                balance, peak = result
+                balance, peak, position_open, position_type = result
             else:
-                balance, peak = INITIAL_BALANCE, INITIAL_BALANCE
+                balance, peak, position_open, position_type = INITIAL_BALANCE, INITIAL_BALANCE, 0, None
             
             # Calcula lucro/perda em porcentagem
             profit_percentage = ((balance - INITIAL_BALANCE) / INITIAL_BALANCE) * 100
@@ -290,15 +436,15 @@ class TradeSimulator:
             if peak > 0:
                 max_drawdown = ((peak - balance) / peak) * 100 if balance < peak else 0
             
-            # Taxa de vitória
-            cursor.execute('SELECT COUNT(*) FROM trades WHERE action = "SELL" AND profit_loss > 0')
+            # Taxa de vitória (trades fechados com lucro)
+            cursor.execute('SELECT COUNT(*) FROM trades WHERE profit_loss > 0')
             winning_trades = cursor.fetchone()[0]
             
-            win_rate = (winning_trades / total_shorts * 100) if total_shorts > 0 else 0
+            win_rate = (winning_trades / total_closed * 100) if total_closed > 0 else 0
             
             # Últimos 10 trades
             cursor.execute('''
-                SELECT action, price, quantity, profit_loss, timestamp 
+                SELECT action, position_type, price, quantity, profit_loss, timestamp 
                 FROM trades 
                 ORDER BY id DESC 
                 LIMIT 10
@@ -310,6 +456,7 @@ class TradeSimulator:
             stats = {
                 'total_longs': total_longs,
                 'total_shorts': total_shorts,
+                'total_closed': total_closed,
                 'total_profit_usd': round(total_profit, 2),
                 'total_profit_percentage': round(profit_percentage, 2),
                 'current_balance': round(balance, 2),
@@ -317,10 +464,11 @@ class TradeSimulator:
                 'max_drawdown': round(max_drawdown, 2),
                 'win_rate': round(win_rate, 2),
                 'recent_trades': recent_trades,
-                'position_open': self.current_position is not None
+                'position_open': position_open == 1,
+                'position_type': position_type
             }
             
-            print(f"[GET_STATISTICS] Stats calculados: Longs={total_longs}, Shorts={total_shorts}, Balance={balance}")
+            print(f"[GET_STATISTICS] Longs={total_longs}, Shorts={total_shorts}, Fechados={total_closed}, Balance={balance}")
             return stats
             
         except Exception as e:
@@ -331,6 +479,7 @@ class TradeSimulator:
             return {
                 'total_longs': 0,
                 'total_shorts': 0,
+                'total_closed': 0,
                 'total_profit_usd': 0.0,
                 'total_profit_percentage': 0.0,
                 'current_balance': INITIAL_BALANCE,
@@ -338,7 +487,8 @@ class TradeSimulator:
                 'max_drawdown': 0.0,
                 'win_rate': 0.0,
                 'recent_trades': [],
-                'position_open': False
+                'position_open': False,
+                'position_type': None
             }
 
 # Instância global do simulador
@@ -346,7 +496,7 @@ simulator = TradeSimulator()
 
 @app.route('/webhook', methods=['POST'])
 def webhook():
-    """Endpoint para receber sinais do TradingView"""
+    """Endpoint para receber sinais do TradingView - SOMENTE executa quando recebe sinal"""
     try:
         data = request.json
         print(f"[WEBHOOK] Recebido: {data}")
@@ -375,7 +525,7 @@ def webhook():
         
         timestamp = data.get('time', datetime.now().isoformat())
         
-        print(f"[WEBHOOK] Processando - Action: {action}, Price: {price}")
+        print(f"[WEBHOOK] Processando - Action: {action}, Price: {price}, Posição atual: {simulator.position_type}")
         
         # Validação
         if not action:
@@ -386,13 +536,32 @@ def webhook():
             print("[WEBHOOK] Erro: Price inválido")
             return jsonify({'status': 'error', 'message': 'Price inválido ou não encontrado'}), 400
         
-        # Processa a ação
+        # Lógica de execução baseada no sinal e posição atual
+        result = None
+        
         if action == 'buy':
-            result = simulator.open_long(price, timestamp)
-            print(f"[TRADE] LONG aberto - Preço: ${price}, Resultado: {result}")
+            if simulator.position_type == 'SHORT':
+                # BUY com SHORT aberto = Fecha SHORT
+                result = simulator.close_short(price, timestamp)
+                print(f"[TRADE] SHORT fechado - Preço: ${price}, Resultado: {result}")
+            elif not simulator.current_position:
+                # BUY sem posição = Abre LONG
+                result = simulator.open_long(price, timestamp)
+                print(f"[TRADE] LONG aberto - Preço: ${price}, Resultado: {result}")
+            else:
+                result = {'status': 'error', 'message': f'Já existe posição {simulator.position_type} aberta'}
+                
         elif action == 'sell':
-            result = simulator.close_long(price, timestamp)
-            print(f"[TRADE] LONG fechado - Preço: ${price}, Resultado: {result}")
+            if simulator.position_type == 'LONG':
+                # SELL com LONG aberto = Fecha LONG
+                result = simulator.close_long(price, timestamp)
+                print(f"[TRADE] LONG fechado - Preço: ${price}, Resultado: {result}")
+            elif not simulator.current_position:
+                # SELL sem posição = Abre SHORT
+                result = simulator.open_short(price, timestamp)
+                print(f"[TRADE] SHORT aberto - Preço: ${price}, Resultado: {result}")
+            else:
+                result = {'status': 'error', 'message': f'Já existe posição {simulator.position_type} aberta'}
         else:
             print(f"[WEBHOOK] Erro: Ação desconhecida: {action}")
             return jsonify({'status': 'error', 'message': f'Ação desconhecida: {action}'}), 400
@@ -422,7 +591,9 @@ def api_stats():
     try:
         stats = simulator.get_statistics()
         print(f"[API STATS] Retornando: {stats}")
-        return jsonify(stats)
+        response = jsonify(stats)
+        response.headers['Content-Type'] = 'application/json'
+        return response
     except Exception as e:
         print(f"[API STATS] Erro: {str(e)}")
         import traceback
