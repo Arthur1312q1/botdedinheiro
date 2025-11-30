@@ -270,6 +270,55 @@
                     <thead>
                         <tr>
                             <th>Ação</th>
+                            <th>Tipo</th>
+                            <th>Preço</th>
+                            <th>Quantidade</th>
+                            <th>Lucro/Perda</th>
+                            <th>Data/Hora</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+            `;
+            
+            trades.forEach(trade => {
+                const action = trade[0];
+                const positionType = trade[1];
+                const price = parseFloat(trade[2]);
+                const quantity = parseFloat(trade[3]);
+                const profitLoss = trade[4] ? parseFloat(trade[4]) : null;
+                const timestamp = new Date(trade[5]).toLocaleString('pt-BR');
+                
+                const badgeClass = action === 'BUY' ? 'buy' : 'sell';
+                const profitClass = profitLoss && profitLoss > 0 ? 'profit-positive' : 'profit-negative';
+                const profitText = profitLoss ? '
+            
+            tableHTML += '</tbody></table>';
+            container.innerHTML = tableHTML;
+        }
+        
+        updateDashboard();
+        setInterval(updateDashboard, 3000);
+    </script>
+</body>
+</html> + data.current_balance.toFixed(2);
+                    document.getElementById('initialBalance').textContent = data.initial_balance.toFixed(2);
+                    document.getElementById('totalLongs').textContent = data.total_longs;
+                    document.getElementById('totalShorts').textContent = data.total_shorts;
+                    document.getElementById('totalProfitUSD').textContent = '
+        
+        function updateTradesTable(trades) {
+            const container = document.getElementById('tradesContainer');
+            
+            if (trades.length === 0) {
+                container.innerHTML = '<div class="loading">Nenhum trade registrado ainda.</div>';
+                return;
+            }
+            
+            let tableHTML = `
+                <table class="trade-table">
+                    <thead>
+                        <tr>
+                            <th>Ação</th>
                             <th>Preço</th>
                             <th>Quantidade</th>
                             <th>Lucro/Perda</th>
@@ -294,6 +343,127 @@
                     <tr>
                         <td><span class="badge ${badgeClass}">${action}</span></td>
                         <td>$${price.toFixed(2)}</td>
+                        <td>${quantity.toFixed(6)} ETH</td>
+                        <td class="${profitLoss ? profitClass : ''}">${profitText}</td>
+                        <td>${timestamp}</td>
+                    </tr>
+                `;
+            });
+            
+            tableHTML += '</tbody></table>';
+            container.innerHTML = tableHTML;
+        }
+        
+        updateDashboard();
+        setInterval(updateDashboard, 3000);
+    </script>
+</body>
+</html> + data.total_profit_usd.toFixed(2);
+                    document.getElementById('totalProfitPercent').textContent = data.total_profit_percentage.toFixed(2) + '%';
+                    document.getElementById('maxDrawdown').textContent = data.max_drawdown.toFixed(2) + '%';
+                    document.getElementById('winRate').textContent = data.win_rate.toFixed(2) + '%';
+                    
+                    // Atualiza cor do lucro USD
+                    const profitCard = document.getElementById('profitCard');
+                    if (data.total_profit_usd > 0) {
+                        profitCard.classList.add('positive');
+                        profitCard.classList.remove('negative');
+                    } else if (data.total_profit_usd < 0) {
+                        profitCard.classList.add('negative');
+                        profitCard.classList.remove('positive');
+                    }
+                    
+                    // Atualiza cor do lucro %
+                    const profitPercentCard = document.getElementById('profitPercentCard');
+                    if (data.total_profit_percentage > 0) {
+                        profitPercentCard.classList.add('positive');
+                        profitPercentCard.classList.remove('negative');
+                    } else if (data.total_profit_percentage < 0) {
+                        profitPercentCard.classList.add('negative');
+                        profitPercentCard.classList.remove('positive');
+                    }
+                    
+                    const statusIndicator = document.getElementById('positionStatus');
+                    const positionText = document.getElementById('positionText');
+                    
+                    if (data.position_open && data.position_type) {
+                        statusIndicator.className = 'status-indicator open';
+                        if (data.position_type === 'LONG') {
+                            positionText.textContent = '🟢 Posição LONG Aberta';
+                        } else if (data.position_type === 'SHORT') {
+                            positionText.textContent = '🔴 Posição SHORT Aberta';
+                        }
+                    } else {
+                        statusIndicator.className = 'status-indicator closed';
+                        positionText.textContent = 'Sem Posição Aberta';
+                    }
+                    
+                    updateTradesTable(data.recent_trades);
+                })
+                .catch(error => {
+                    console.error('Erro ao atualizar dashboard:', error);
+                });
+        }
+        
+        function updateTradesTable(trades) {
+            const container = document.getElementById('tradesContainer');
+            
+            if (trades.length === 0) {
+                container.innerHTML = '<div class="loading">Nenhum trade registrado ainda.</div>';
+                return;
+            }
+            
+            let tableHTML = `
+                <table class="trade-table">
+                    <thead>
+                        <tr>
+                            <th>Ação</th>
+                            <th>Preço</th>
+                            <th>Quantidade</th>
+                            <th>Lucro/Perda</th>
+                            <th>Data/Hora</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+            `;
+            
+            trades.forEach(trade => {
+                const action = trade[0];
+                const price = parseFloat(trade[1]);
+                const quantity = parseFloat(trade[2]);
+                const profitLoss = trade[3] ? parseFloat(trade[3]) : null;
+                const timestamp = new Date(trade[4]).toLocaleString('pt-BR');
+                
+                const badgeClass = action === 'BUY' ? 'buy' : 'sell';
+                const profitClass = profitLoss && profitLoss > 0 ? 'profit-positive' : 'profit-negative';
+                const profitText = profitLoss ? '$' + profitLoss.toFixed(2) : '-';
+                
+                tableHTML += `
+                    <tr>
+                        <td><span class="badge ${badgeClass}">${action}</span></td>
+                        <td>$${price.toFixed(2)}</td>
+                        <td>${quantity.toFixed(6)} ETH</td>
+                        <td class="${profitLoss ? profitClass : ''}">${profitText}</td>
+                        <td>${timestamp}</td>
+                    </tr>
+                `;
+            });
+            
+            tableHTML += '</tbody></table>';
+            container.innerHTML = tableHTML;
+        }
+        
+        updateDashboard();
+        setInterval(updateDashboard, 3000);
+    </script>
+</body>
+</html> + profitLoss.toFixed(2) : '-';
+                
+                tableHTML += `
+                    <tr>
+                        <td><span class="badge ${badgeClass}">${action}</span></td>
+                        <td><strong>${positionType}</strong></td>
+                        <td>${price.toFixed(2)}</td>
                         <td>${quantity.toFixed(6)} ETH</td>
                         <td class="${profitLoss ? profitClass : ''}">${profitText}</td>
                         <td>${timestamp}</td>
@@ -395,9 +565,13 @@
                     const statusIndicator = document.getElementById('positionStatus');
                     const positionText = document.getElementById('positionText');
                     
-                    if (data.position_open) {
+                    if (data.position_open && data.position_type) {
                         statusIndicator.className = 'status-indicator open';
-                        positionText.textContent = 'Posição LONG Aberta';
+                        if (data.position_type === 'LONG') {
+                            positionText.textContent = '🟢 Posição LONG Aberta';
+                        } else if (data.position_type === 'SHORT') {
+                            positionText.textContent = '🔴 Posição SHORT Aberta';
+                        }
                     } else {
                         statusIndicator.className = 'status-indicator closed';
                         positionText.textContent = 'Sem Posição Aberta';
